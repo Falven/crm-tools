@@ -67,90 +67,49 @@ def create_server(**kwargs: Any) -> HostedMCPServer:
 
         register(server)
 
-    with tool_directory("contoso_save_request"):
+    with tool_directory("contoso_review_request"):
         from .tools.contoso_open_request import (
             RESOURCE_URI as CONTOSO_REQUEST_RESOURCE_URI,
-            _strict_intake_inputs,
+            _strict_inputs,
         )
-        from .tools.contoso_save_request import contoso_save_request
+        from .tools.contoso_review_request import contoso_review_request
 
         server.add_tool(
-            contoso_save_request,
-            title="Save software request",
-            meta={
-                "ui": {
-                    "resourceUri": CONTOSO_REQUEST_RESOURCE_URI,
-                    "visibility": ["model", "app"],
-                }
-            },
+            contoso_review_request,
+            title="Review software request",
+            meta={"ui": {"resourceUri": CONTOSO_REQUEST_RESOURCE_URI}},
             annotations=ToolAnnotations(
-                read_only_hint=False,
-                destructive_hint=True,
+                read_only_hint=True,
+                destructive_hint=False,
                 idempotent_hint=True,
                 open_world_hint=False,
             ),
         )
-
-        _strict_intake_inputs(server, "contoso_save_request")
-
-    with tool_directory("contoso_create_request"):
-        from .tools.contoso_open_request import (
-            RESOURCE_URI as CONTOSO_REQUEST_RESOURCE_URI,
-            _strict_intake_inputs,
-        )
-        from .tools.contoso_create_request import contoso_create_request
-
-        server.add_tool(
-            contoso_create_request,
-            title="Create software request draft",
-            meta={
-                "ui": {
-                    "resourceUri": CONTOSO_REQUEST_RESOURCE_URI,
-                    "visibility": ["model", "app"],
-                }
-            },
-            annotations=ToolAnnotations(
-                read_only_hint=False,
-                destructive_hint=False,
-                idempotent_hint=False,
-                open_world_hint=False,
-            ),
-        )
-
-        _strict_intake_inputs(server, "contoso_create_request")
+        _strict_inputs(server, "contoso_review_request")
 
     with tool_directory("contoso_submit_request"):
-        from .tools.contoso_open_request import (
-            RESOURCE_URI as CONTOSO_REQUEST_RESOURCE_URI,
-            _strict_intake_inputs,
-        )
+        from .tools.contoso_open_request import _strict_inputs
         from .tools.contoso_submit_request import contoso_submit_request
 
         server.add_tool(
             contoso_submit_request,
             title="Submit software request",
-            meta={
-                "ui": {
-                    "resourceUri": CONTOSO_REQUEST_RESOURCE_URI,
-                    "visibility": ["model", "app"],
-                }
-            },
+            meta={"ui": {"visibility": ["model", "app"]}},
             annotations=ToolAnnotations(
                 read_only_hint=False,
-                destructive_hint=True,
+                destructive_hint=False,
                 idempotent_hint=True,
                 open_world_hint=False,
             ),
         )
-
-        _strict_intake_inputs(server, "contoso_submit_request")
+        _strict_inputs(server, "contoso_submit_request")
 
     with tool_directory("contoso_list_requests"):
         from .tools.contoso_list_requests import contoso_list_requests
 
         server.add_tool(
             contoso_list_requests,
-            title="List software requests",
+            title="List software projects",
             annotations=ToolAnnotations(
                 read_only_hint=True,
                 destructive_hint=False,
@@ -159,44 +118,14 @@ def create_server(**kwargs: Any) -> HostedMCPServer:
             ),
         )
 
-    with tool_directory("contoso_save_answers"):
-        from .tools.contoso_open_request import (
-            RESOURCE_URI as CONTOSO_REQUEST_RESOURCE_URI,
-        )
-        from .tools.contoso_save_answers import contoso_save_answers
-
-        server.add_tool(
-            contoso_save_answers,
-            title="Save clarification answers",
-            meta={
-                "ui": {
-                    "resourceUri": CONTOSO_REQUEST_RESOURCE_URI,
-                    "visibility": ["model", "app"],
-                }
-            },
-            annotations=ToolAnnotations(
-                read_only_hint=False,
-                destructive_hint=True,
-                idempotent_hint=True,
-                open_world_hint=False,
-            ),
-        )
-
     with tool_directory("contoso_submit_answers"):
-        from .tools.contoso_open_request import (
-            RESOURCE_URI as CONTOSO_REQUEST_RESOURCE_URI,
-        )
+        from .tools.contoso_open_request import _strict_inputs
         from .tools.contoso_submit_answers import contoso_submit_answers
 
         server.add_tool(
             contoso_submit_answers,
             title="Submit clarification answers",
-            meta={
-                "ui": {
-                    "resourceUri": CONTOSO_REQUEST_RESOURCE_URI,
-                    "visibility": ["model", "app"],
-                }
-            },
+            meta={"ui": {"visibility": ["model", "app"]}},
             annotations=ToolAnnotations(
                 read_only_hint=False,
                 destructive_hint=True,
@@ -204,5 +133,6 @@ def create_server(**kwargs: Any) -> HostedMCPServer:
                 open_world_hint=False,
             ),
         )
+        _strict_inputs(server, "contoso_submit_answers")
 
     return server

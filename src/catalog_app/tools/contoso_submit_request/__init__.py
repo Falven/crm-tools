@@ -1,15 +1,15 @@
-"""Submit a saved intake draft after the customer's explicit decision."""
+"""Create a saved software request only after explicit submission."""
 
 from typing import Any
 
-from azure.core import MatchConditions
-from azure.data.tables import UpdateMode
+from azure.core.exceptions import ResourceExistsError
 from mcp.server.mcpserver.exceptions import ToolError
 
 from ..contoso_open_request import (
-    RequestId,
-    Revision,
-    _check_revision,
+    INTAKE_FIELDS,
+    IntakeText,
+    SubmissionId,
+    _brief,
     _customer_partition,
     _missing_intake_fields,
     _owned_request,
@@ -19,47 +19,51 @@ from ..contoso_open_request import (
 
 
 def contoso_submit_request(
-    request_id: RequestId, revision: Revision
+    submission_id: SubmissionId,
+    requested_software: IntakeText,
+    business_objective: IntakeText,
+    capabilities: IntakeText,
+    decision_maker: IntakeText,
+    systems_and_constraints: IntakeText = "",
+    preferred_deadline: IntakeText = "",
 ) -> dict[str, Any]:
-    """Submit a saved draft only after the customer explicitly confirms submission.
+    """Submit the complete software brief after the customer's explicit confirmation.
 
-    Takes the request ID and current revision, not new field values. Requested
-    software, business objective, capabilities, and decision maker must be saved
-    and nonblank. Systems/constraints and preferred deadline are optional. Moves
-    a valid draft to submitted; creation and saving never submit. A conflict
-    requires reopening and reviewing. Repeating the completed submission with
-    its original or resulting revision returns the saved result without writing.
+    Use the submission_id from contoso_review_request. The four required fields
+    must be nonblank; systems/constraints and the customer's deadline are optional.
+    This is the first storage write. Returns the saved request ID and status.
+    Reusing the same submission_id and brief returns the existing request without
+    creating another; different details with an already-used ID are rejected.
     """
     partition = _customer_partition()
-    with _storage() as table:
-        entity = _owned_request(table, partition, request_id)
-        if entity["Status"] == "submitted":
-            if entity.get("IntakeSubmittedFromRevision") and revision in (
-                entity["IntakeSubmittedFromRevision"],
-                entity.metadata["etag"],
-            ):
-                return _view(entity, entity.metadata["etag"])
-            raise ToolError("This request changed. Reopen it before submitting.")
-        if entity["Status"] != "draft":
-            raise ToolError("Only draft requests can be submitted.")
-        _check_revision(entity, revision)
-        missing = _missing_intake_fields(entity)
-        if missing:
-            raise ToolError(
-                "Complete and save the required fields before submitting: "
-                + ", ".join(missing)
-            )
-        update = {
-            "PartitionKey": partition,
-            "RowKey": request_id,
-            "Status": "submitted",
-            # Keep intake retry metadata separate from invoice clarification.
-            "IntakeSubmittedFromRevision": revision,
-        }
-        result = table.update_entity(
-            update,
-            mode=UpdateMode.MERGE,
-            etag=revision,
-            match_condition=MatchConditions.IfNotModified,
+    brief = {
+        "requested_software": requested_software,
+        "business_objective": business_objective,
+        "capabilities": capabilities,
+        "systems_and_constraints": systems_and_constraints,
+        "decision_maker": decision_maker,
+        "preferred_deadline": preferred_deadline,
+    }
+    missing = _missing_intake_fields(brief)
+    if missing:
+        raise ToolError(
+            "Complete the required fields before submitting: " + ", ".join(missing)
         )
-        return _view({**entity, **update}, result["etag"])
+    entity = {
+        "PartitionKey": partition,
+        "RowKey": "REQUEST-" + submission_id,
+        "DemoId": "contoso-demo",
+        "Status": "submitted",
+        **{INTAKE_FIELDS[field]: value for field, value in brief.items()},
+    }
+    with _storage() as table:
+        try:
+            result = table.create_entity(entity)
+        except ResourceExistsError:
+            saved = _owned_request(table, partition, entity["RowKey"])
+            if _brief(saved) != brief:
+                raise ToolError(
+                    "This submission already exists with different details. Open the saved project."
+                ) from None
+            return _view(saved, saved.metadata["etag"])
+        return _view(entity, result["etag"])

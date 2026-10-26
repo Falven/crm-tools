@@ -9,7 +9,6 @@ const intakeFields = {
 };
 const requiredIntakeFields = ['requested_software', 'business_objective', 'capabilities', 'decision_maker'];
 const intakeInputs = new Map(Object.keys(intakeFields).map(key => [key, document.getElementById(key.replaceAll('_', '-'))]));
-const save = document.getElementById('save');
 const submitRequest = document.getElementById('submit-request');
 const submitRequestHint = document.getElementById('submit-request-hint');
 const submit = document.getElementById('submit-answers');
@@ -17,6 +16,7 @@ const submitHint = document.getElementById('submit-hint');
 const reload = document.getElementById('reload');
 const message = document.getElementById('message');
 const answerInputs = new Map();
+let initialResult = null;
 let requestId = '';
 let request = null;
 let connected = false;
@@ -32,56 +32,56 @@ function answerValue(question, input) {
   return question.type === 'yes_no' ? input.value === 'true' : input.value;
 }
 
-function unsavedAnswers() {
-  return request.questions.some(question => {
-    const saved = Object.hasOwn(request.answers, question.id) ? request.answers[question.id] : null;
-    return answerValue(question, answerInputs.get(question.id)) !== (saved === '' ? null : saved);
+function missingIntakeFields() {
+  return requiredIntakeFields.filter(key => !intakeInputs.get(key).value.trim());
+}
+
+function missingAnswers() {
+  return request.questions.filter(question => {
+    const value = answerValue(question, answerInputs.get(question.id));
+    return question.required && (value === null || typeof value === 'string' && !value.trim());
   });
 }
 
-function changedIntakeFields() {
-  return Object.fromEntries([...intakeInputs].filter(([key, input]) => input.value !== request[key])
-    .map(([key, input]) => [key, input.value]));
-}
-
-function unsavedIntake() {
-  return Object.keys(changedIntakeFields()).length > 0;
-}
-
-function incompleteIntake() {
-  return request.missing_required_fields.length > 0
-    || requiredIntakeFields.some(key => !request[key].trim());
+function showMissing(sectionId, listId, labels) {
+  const list = document.getElementById(listId);
+  list.replaceChildren();
+  for (const label of labels) {
+    const item = document.createElement('li');
+    item.textContent = label;
+    list.append(item);
+  }
+  document.getElementById(sectionId).hidden = labels.length === 0;
 }
 
 function availability(working) {
   busy = working;
   form.setAttribute('aria-busy', String(working));
-  const intake = request?.view === 'intake' && request.status === 'draft';
+  const review = request?.view === 'review';
   const clarification = request?.view === 'clarification' && request.status === 'needs_clarification';
-  const intakeDirty = intake && unsavedIntake();
-  const intakeIncomplete = intake && incompleteIntake();
-  save.hidden = !intake && !clarification;
-  save.disabled = working || (!intake && !clarification) || (intake && !intakeDirty);
-  for (const input of intakeInputs.values()) input.disabled = working || !intake;
+  for (const input of intakeInputs.values()) input.disabled = working || !review;
   for (const input of answerInputs.values()) input.disabled = working || !clarification;
-  submitRequest.hidden = !intake;
-  submitRequestHint.hidden = !intake;
-  submitRequest.disabled = working || !intake || intakeDirty || intakeIncomplete;
-  if (intake) {
-    submitRequestHint.textContent = intakeDirty ? 'Save your changes before submitting your request.'
-      : intakeIncomplete ? 'Complete and save the four required fields before submitting your request.'
-      : 'Your draft is saved. Select Submit request when you are ready to send it for review.';
+  submitRequest.hidden = !review;
+  submitRequestHint.hidden = !review;
+  const missingFields = review ? missingIntakeFields() : [];
+  submitRequest.disabled = working || !connected || !review || missingFields.length > 0;
+  if (review) {
+    showMissing('missing-fields', 'missing-fields-list', missingFields.map(key => intakeFields[key]));
+    submitRequestHint.textContent = missingFields.length
+      ? 'Complete the four required fields before submitting.'
+      : 'Review your details, then submit when you are ready to send them for review.';
   }
   submit.hidden = !clarification;
   submitHint.hidden = !clarification;
-  const dirty = clarification && unsavedAnswers();
-  const incomplete = clarification && request.missing_required_answers.length > 0;
-  submit.disabled = working || !clarification || dirty || incomplete;
+  const missingQuestions = clarification ? missingAnswers() : [];
+  submit.disabled = working || !connected || !clarification || missingQuestions.length > 0;
   if (clarification) {
-    submitHint.textContent = dirty ? 'Save your changes before submitting.'
-      : incomplete ? 'Complete and save the required answers before submitting.'
-      : 'Your answers are saved. Submit when you are ready to send them for review.';
+    showMissing('missing-answers', 'missing-list', missingQuestions.map(question => question.prompt));
+    submitHint.textContent = missingQuestions.length
+      ? 'Complete the required answers before submitting.'
+      : 'Submit answers saves your answers and sends them for review.';
   }
+  reload.hidden = !requestId;
   reload.disabled = working || !connected || !requestId;
 }
 
@@ -90,11 +90,8 @@ function unpack(result) {
     const text = result.content?.filter(item => item.type === 'text').map(item => item.text).join(' ');
     throw new Error(text || 'The request could not be completed.');
   }
-  const data = result.structuredContent;
-  if (!data || !['request_id', 'title', 'business_objective', 'status', 'next_action', 'revision'].every(key => typeof data[key] === 'string')) {
-    throw new Error('The saved request response is incomplete.');
-  }
-  return data;
+  if (!result.structuredContent) throw new Error('The request response is incomplete.');
+  return result.structuredContent;
 }
 
 function detail(list, label, value) {
@@ -106,31 +103,26 @@ function detail(list, label, value) {
 }
 
 function show(data) {
-  if (!['intake', 'clarification', 'status'].includes(data.view) || !data.brief
-      || !Object.keys(intakeFields).every(key => typeof data[key] === 'string')
-      || !Array.isArray(data.missing_required_fields)
-      || !Array.isArray(data.questions) || !data.answers || !Array.isArray(data.missing_required_answers)) {
-    throw new Error('The saved request response is incomplete.');
+  const review = data.view === 'review';
+  if (!['review', 'clarification', 'status'].includes(data.view) || !data.brief
+      || !Object.keys(intakeFields).every(key => typeof data.brief[key] === 'string')
+      || (review ? !/^[0-9a-f]{32}$/.test(data.submission_id)
+        : !['request_id', 'title', 'status', 'next_action', 'revision'].every(key => typeof data[key] === 'string')
+          || !Array.isArray(data.questions) || !data.answers)) {
+    throw new Error('The request response is incomplete.');
   }
   request = data;
-  document.getElementById('request-title').textContent = data.title || 'Software request';
-  document.getElementById('request-id').textContent = data.request_id;
-  const labels = { draft: 'Draft', submitted: 'Submitted', needs_clarification: 'Needs clarification', in_review: 'In review' };
-  document.getElementById('request-status').textContent = '· ' + (labels[data.status] ?? data.status);
-  document.getElementById('next-action').textContent = data.next_action;
-  for (const [key, input] of intakeInputs) input.value = data[key];
-  const missingFields = document.getElementById('missing-fields-list');
-  missingFields.replaceChildren();
-  for (const key of data.missing_required_fields) {
-    const item = document.createElement('li');
-    item.textContent = intakeFields[key] ?? key;
-    missingFields.append(item);
-  }
-  document.getElementById('missing-fields').hidden = data.missing_required_fields.length === 0;
-  document.getElementById('intake-view').hidden = data.view !== 'intake';
+  requestId = review ? '' : data.request_id;
+  document.getElementById('request-title').textContent = data.brief.requested_software || 'Software request';
+  document.getElementById('request-id').textContent = requestId;
+  const labels = { draft: 'Unsubmitted', submitted: 'Submitted', needs_clarification: 'Needs clarification', in_review: 'In review' };
+  document.getElementById('request-status').textContent = review ? 'Review before submitting' : '· ' + (labels[data.status] ?? data.status);
+  document.getElementById('next-action').textContent = review ? 'Nothing is submitted until you choose Submit request.' : data.next_action;
+  for (const [key, input] of intakeInputs) input.value = data.brief[key];
+  document.getElementById('intake-view').hidden = !review;
   document.getElementById('clarification-view').hidden = data.view !== 'clarification';
-  document.getElementById('status-view').hidden = data.view !== 'status' || data.questions.length === 0;
-  save.textContent = data.view === 'intake' ? 'Save draft' : 'Save answers';
+  const questions = review ? [] : data.questions;
+  document.getElementById('status-view').hidden = data.view !== 'status' || questions.length === 0;
 
   const brief = document.getElementById('brief');
   brief.replaceChildren();
@@ -138,21 +130,20 @@ function show(data) {
     if (data.brief[key]) detail(brief, label, data.brief[key]);
   }
   const savedBrief = document.getElementById('saved-brief');
-  savedBrief.hidden = data.view === 'intake';
+  savedBrief.hidden = review;
   savedBrief.open = data.view === 'status';
 
   answerInputs.clear();
-  const questions = document.getElementById('questions');
-  questions.replaceChildren();
+  const questionFields = document.getElementById('questions');
+  questionFields.replaceChildren();
   const savedAnswers = document.getElementById('saved-answers');
   savedAnswers.replaceChildren();
-  for (const [index, question] of data.questions.entries()) {
+  for (const [index, question] of questions.entries()) {
     const answer = Object.hasOwn(data.answers, question.id) ? data.answers[question.id] : undefined;
     if (data.view === 'status') {
       detail(savedAnswers, question.prompt, answer === true ? 'Yes' : answer === false ? 'No' : answer || 'Not answered');
       continue;
     }
-    if (data.view !== 'clarification') continue;
     const field = document.createElement('div');
     field.className = 'question';
     const label = document.createElement('label');
@@ -177,29 +168,20 @@ function show(data) {
     }
     input.value = answer == null ? '' : String(answer);
     field.append(label, input);
-    questions.append(field);
+    questionFields.append(field);
     answerInputs.set(question.id, input);
   }
-  const missing = document.getElementById('missing-list');
-  missing.replaceChildren();
-  for (const question of data.questions.filter(item => data.missing_required_answers.includes(item.id))) {
-    const item = document.createElement('li');
-    item.textContent = question.prompt;
-    missing.append(item);
-  }
-  document.getElementById('missing-answers').hidden = data.missing_required_answers.length === 0;
 }
 
 async function load() {
   if (busy || !connected || !requestId) return;
   availability(true);
-  status('Loading the saved request…');
+  status('Loading the saved project…');
   try {
     show(unpack(await app.callServerTool({
-      name: 'contoso_open_request',
-      arguments: { request_id: requestId },
+      name: 'contoso_open_request', arguments: { request_id: requestId },
     })));
-    status('Latest saved request loaded.');
+    status('Latest saved project loaded.');
   } catch (error) {
     request = null;
     status(error.message, true);
@@ -208,16 +190,16 @@ async function load() {
   }
 }
 
-async function change(name, arguments_, success) {
+async function submitTool(name, arguments_, success) {
   availability(true);
-  status(name === 'contoso_submit_request' ? 'Submitting request…'
-    : name === 'contoso_submit_answers' ? 'Submitting answers…' : 'Saving…');
+  status('Submitting…');
   try {
     show(unpack(await app.callServerTool({ name, arguments: arguments_ })));
     status(success);
   } catch (error) {
-    request = null;
-    status(error.message + ' Reload the saved request before trying again.', true);
+    const review = request?.view === 'review';
+    if (!review) request = null;
+    status(error.message + (review ? '' : ' Reload the saved project before trying again.'), true);
   } finally {
     availability(false);
   }
@@ -225,57 +207,60 @@ async function change(name, arguments_, success) {
 
 form.addEventListener('input', () => { if (!busy) availability(false); });
 form.addEventListener('change', () => { if (!busy) availability(false); });
-form.addEventListener('submit', async event => {
-  event.preventDefault();
-  if (busy || !request) return;
-  const arguments_ = { request_id: request.request_id, revision: request.revision };
-  if (request.view === 'intake' && request.status === 'draft') {
-    const fields = changedIntakeFields();
-    if (Object.keys(fields).length === 0) return;
-    await change('contoso_save_request', { ...arguments_, ...fields }, 'Draft saved. Your request has not been submitted.');
-  } else if (request.view === 'clarification' && request.status === 'needs_clarification') {
-    const answers = Object.fromEntries(request.questions.map(question => [question.id, answerValue(question, answerInputs.get(question.id))]));
-    await change('contoso_save_answers', { ...arguments_, answers, question_set_revision: request.question_set_revision }, 'Answers saved.');
-  }
-});
+form.addEventListener('submit', event => event.preventDefault());
 
-// Submission is a separate explicit click, never a form submit or save side effect.
 submitRequest.addEventListener('click', async () => {
-  if (busy || !request || request.view !== 'intake' || request.status !== 'draft'
-      || unsavedIntake() || incompleteIntake()) return;
-  await change('contoso_submit_request', {
-    request_id: request.request_id, revision: request.revision,
+  if (busy || !connected || request?.view !== 'review' || missingIntakeFields().length) return;
+  await submitTool('contoso_submit_request', {
+    submission_id: request.submission_id,
+    ...Object.fromEntries([...intakeInputs].map(([key, input]) => [key, input.value])),
   }, 'Request submitted for review.');
 });
 
 submit.addEventListener('click', async () => {
-  if (busy || !request || request.view !== 'clarification' || request.status !== 'needs_clarification'
-      || unsavedAnswers() || request.missing_required_answers.length > 0) return;
-  await change('contoso_submit_answers', {
-    request_id: request.request_id, revision: request.revision,
+  if (busy || !connected || request?.view !== 'clarification' || missingAnswers().length) return;
+  const answers = Object.fromEntries(request.questions.map(question =>
+    [question.id, answerValue(question, answerInputs.get(question.id))]));
+  await submitTool('contoso_submit_answers', {
+    request_id: request.request_id, answers, revision: request.revision,
     question_set_revision: request.question_set_revision,
   }, 'Clarification submitted for review.');
 });
 
 reload.addEventListener('click', load);
 
-app.ontoolresult = result => {
-  if (requestId) return;
+function initialize() {
   try {
-    // Retained result data is not current authority; use only its ID for a fresh read.
-    requestId = unpack(result).request_id;
-    if (connected) void load();
+    if (initialResult.view === 'review') {
+      // A review reopens its recorded brief; open the submitted project for saved state.
+      show(initialResult);
+      status('Review your details. Changes in this form are saved only when you submit.');
+      availability(false);
+    } else {
+      if (typeof initialResult.request_id !== 'string') throw new Error('The project ID is missing.');
+      requestId = initialResult.request_id;
+      void load();
+    }
+  } catch (error) {
+    status(error.message, true);
+  }
+}
+
+app.ontoolresult = result => {
+  if (initialResult) return;
+  try {
+    initialResult = unpack(result);
+    if (connected) initialize();
   } catch (error) {
     status(error.message, true);
   }
 };
 
 if (window.parent === window) {
-  status('Open this form from a software request in your agent.', true);
+  status('Open this form from your agent or the MCP App picker.', true);
 } else {
   app.connect().then(() => {
     connected = true;
-    availability(false);
-    if (requestId) void load();
+    if (initialResult) initialize();
   }).catch(error => status('Could not connect to the agent. Reopen the form. ' + error.message, true));
 }

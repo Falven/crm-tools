@@ -176,17 +176,35 @@ class Table:
         return {"etag": f'"{revision}"'}
 
 
+TOOLS = (
+    "contoso_review_request",
+    "contoso_submit_request",
+    "contoso_list_requests",
+    "contoso_open_request",
+    "contoso_submit_answers",
+)
+BRIEF = {
+    "requested_software": "Contractor timesheet approvals",
+    "business_objective": "Reduce weekly timesheet follow-up.",
+    "capabilities": "Collect timesheets, route approvals, and show missing submissions.",
+    "systems_and_constraints": "Use Teams for reminders.",
+    "decision_maker": "Operations lead",
+    "preferred_deadline": "Before the next quarterly contractor intake",
+}
+SUBMISSION_ID = "a" * 32
+ANSWERS = {"reminder_schedule": "Weekly", "notify_contractors": False}
+
+
 class ContosoRequestTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.server = MCPServer("contoso-request-check", extensions=[Apps()])
-        register_catalog_tool(self.server, "contoso_open_request")
-        register_catalog_tool(self.server, "contoso_save_request")
-        register_catalog_tool(self.server, "contoso_list_requests")
-        register_catalog_tool(self.server, "contoso_save_answers")
-        register_catalog_tool(self.server, "contoso_submit_answers")
-        register_catalog_tool(self.server, "contoso_create_request")
-        register_catalog_tool(self.server, "contoso_submit_request")
+        self.server = self.new_server()
         self.table = Table()
+
+    def new_server(self):
+        server = MCPServer("software-request-check", extensions=[Apps()])
+        for name in TOOLS:
+            register_catalog_tool(server, name)
+        return server
 
     async def call(self, name, arguments, claims=None):
         if claims is None:
@@ -205,882 +223,239 @@ class ContosoRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("synthetic-bearer-not-for-output", result.model_dump_json())
         return result
 
-    async def test_open_and_save_are_model_and_app_visible_without_storage_configuration(
-        self,
-    ):
+    def clarification_arguments(self, **changes):
+        return {
+            "request_id": CLARIFICATION_ID,
+            "answers": ANSWERS,
+            "revision": '"1"',
+            "question_set_revision": "clarification-1",
+            **changes,
+        }
+
+    async def test_discovery_has_five_tools_and_only_two_app_entry_points(self):
         with patch.dict(os.environ, {}, clear=True):
             async with Client(self.server) as client:
                 tools = (await client.list_tools()).tools
-        visible = [
-            tool.name
-            for tool in tools
-            if "model"
-            in (tool.meta or {}).get("ui", {}).get("visibility", ["model", "app"])
+        self.assertCountEqual([tool.name for tool in tools], TOOLS)
+        apps = [
+            tool for tool in tools if (tool.meta or {}).get("ui", {}).get("resourceUri")
         ]
         self.assertCountEqual(
-            visible,
-            [
-                "contoso_open_request",
-                "contoso_save_request",
-                "contoso_list_requests",
-                "contoso_save_answers",
-                "contoso_submit_answers",
-                "contoso_create_request",
-                "contoso_submit_request",
-            ],
+            [tool.name for tool in apps],
+            ["contoso_review_request", "contoso_open_request"],
+        )
+        self.assertCountEqual(
+            [tool.title for tool in apps],
+            ["Review software request", "Open software project"],
         )
         descriptors = {tool.name: tool for tool in tools}
-        for name in (
-            "contoso_save_request",
-            "contoso_save_answers",
-            "contoso_submit_answers",
-        ):
-            app_ui = descriptors[name].meta["ui"]
-            self.assertIn("app", app_ui["visibility"])
+        self.assertTrue(
+            descriptors["contoso_review_request"].annotations.read_only_hint
+        )
+        for name in ("contoso_submit_request", "contoso_submit_answers"):
             self.assertEqual(
-                app_ui["resourceUri"],
-                descriptors["contoso_open_request"].meta["ui"]["resourceUri"],
+                descriptors[name].meta["ui"]["visibility"], ["model", "app"]
             )
-        for name in ("contoso_create_request", "contoso_submit_request"):
-            app_ui = descriptors[name].meta["ui"]
-            self.assertIn("app", app_ui.get("visibility", ["model", "app"]))
-            self.assertIsInstance(app_ui["resourceUri"], str)
-
-    async def test_intake_draft_is_partially_saved_then_explicitly_submitted(self):
-        created = await self.call(
-            "contoso_create_request",
-            {
-                "requested_software": "Contractor timesheet approvals",
-                "business_objective": "Reduce manual follow-up on contractor timesheets.",
-                "preferred_deadline": "Before our next busy season",
-            },
-        )
-        self.assertFalse(created.is_error, created.content)
-        draft = created.structured_content
-        self.assertIsInstance(draft["request_id"], str)
-        self.assertTrue(draft["request_id"])
-        self.assertNotIn(draft["request_id"], (REQUEST_ID, CLARIFICATION_ID))
-        self.assertEqual(draft["status"], "draft")
-        self.assertEqual(draft["view"], "intake")
-        self.assertEqual(
-            draft["brief"],
-            {
-                "requested_software": "Contractor timesheet approvals",
-                "business_objective": "Reduce manual follow-up on contractor timesheets.",
-                "capabilities": "",
-                "systems_and_constraints": "",
-                "decision_maker": "",
-                "preferred_deadline": "Before our next busy season",
-            },
-        )
-        async with Client(self.server) as client:
-            tools = (await client.list_tools()).tools
-            entry = next(
-                tool for tool in tools if tool.name == "contoso_create_request"
-            )
-            resource = await client.read_resource(entry.meta["ui"]["resourceUri"])
-        self.assertEqual(resource.contents[0].mime_type, "text/html;profile=mcp-app")
-        self.assertTrue(resource.contents[0].text)
-        self.server = MCPServer("replacement-contoso-server", extensions=[Apps()])
-        for tool_id in (
-            "contoso_open_request",
-            "contoso_list_requests",
-            "contoso_save_request",
-            "contoso_submit_request",
-        ):
-            register_catalog_tool(self.server, tool_id)
-        for _ in range(2):
-            reopened = await self.call(
-                "contoso_open_request", {"request_id": draft["request_id"]}
-            )
-            self.assertFalse(reopened.is_error, reopened.content)
-            self.assertEqual(reopened.structured_content, draft)
-        listed = await self.call("contoso_list_requests", {})
-        self.assertCountEqual(
-            [item["request_id"] for item in listed.structured_content["requests"]],
-            [REQUEST_ID, CLARIFICATION_ID, draft["request_id"]],
-        )
-
-        saved = await self.call(
-            "contoso_save_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": draft["revision"],
-                "requested_software": "Contractor timesheet approvals and reminders",
-                "capabilities": "Submit weekly timesheets and route approvals.",
-                "systems_and_constraints": "Microsoft Teams and the current project list.",
-            },
-        )
-        self.assertFalse(saved.is_error, saved.content)
-        partial = saved.structured_content
-        self.assertEqual(partial["status"], "draft")
-        self.assertEqual(partial["view"], "intake")
-        self.assertEqual(
-            partial["brief"],
-            {
-                "requested_software": "Contractor timesheet approvals and reminders",
-                "business_objective": "Reduce manual follow-up on contractor timesheets.",
-                "capabilities": "Submit weekly timesheets and route approvals.",
-                "systems_and_constraints": "Microsoft Teams and the current project list.",
-                "decision_maker": "",
-                "preferred_deadline": "Before our next busy season",
-            },
-        )
-        self.assertNotEqual(partial["revision"], draft["revision"])
-        incomplete = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": partial["revision"],
-            },
-        )
-        self.assertTrue(incomplete.is_error)
-        still_draft = await self.call(
-            "contoso_open_request",
-            {
-                "request_id": draft["request_id"],
-            },
-        )
-        self.assertEqual(still_draft.structured_content, partial)
-
-        saved = await self.call(
-            "contoso_save_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": partial["revision"],
-                "business_objective": "Reduce manual chasing with one weekly approval queue.",
-                "decision_maker": "Customer operations lead",
-                "preferred_deadline": "Before our next busy season, if practical",
-            },
-        )
-        self.assertFalse(saved.is_error, saved.content)
-        complete = saved.structured_content
-        self.assertEqual(complete["status"], "draft")
-        self.assertEqual(
-            complete["brief"],
-            {
-                "requested_software": "Contractor timesheet approvals and reminders",
-                "business_objective": "Reduce manual chasing with one weekly approval queue.",
-                "capabilities": "Submit weekly timesheets and route approvals.",
-                "systems_and_constraints": "Microsoft Teams and the current project list.",
-                "decision_maker": "Customer operations lead",
-                "preferred_deadline": "Before our next busy season, if practical",
-            },
-        )
-        submitted = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": complete["revision"],
-            },
-        )
-        self.assertFalse(submitted.is_error, submitted.content)
-        outcome = submitted.structured_content
-        self.assertEqual(outcome["status"], "submitted")
-        self.assertEqual(outcome["view"], "status")
-        self.assertEqual(outcome["brief"], complete["brief"])
-        self.assertNotEqual(outcome["revision"], complete["revision"])
-        read_only = await self.call(
-            "contoso_save_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": outcome["revision"],
-                "business_objective": "An edit after submission",
-            },
-        )
-        self.assertTrue(read_only.is_error)
-        reopened = await self.call(
-            "contoso_open_request",
-            {
-                "request_id": draft["request_id"],
-            },
-        )
-        self.assertEqual(reopened.structured_content, outcome)
-
-    async def test_intake_required_fields_can_be_cleared_but_not_submitted(self):
-        brief = {
-            "requested_software": "Contractor timesheet approvals",
-            "business_objective": "Reduce manual follow-up.",
-            "capabilities": "Collect timesheets and send approval reminders.",
-            "decision_maker": "Customer operations lead",
-        }
-        created = await self.call("contoso_create_request", brief)
-        self.assertFalse(created.is_error, created.content)
-        current = created.structured_content
-        for field, blank in (
-            ("requested_software", ""),
-            ("business_objective", " \t"),
-            ("capabilities", ""),
-            ("decision_maker", ""),
-        ):
-            with self.subTest(field=field):
-                cleared = await self.call(
-                    "contoso_save_request",
-                    {
-                        "request_id": current["request_id"],
-                        "revision": current["revision"],
-                        field: blank,
-                    },
-                )
-                self.assertFalse(cleared.is_error, cleared.content)
-                current = cleared.structured_content
-                self.assertEqual(current["brief"][field], blank)
-                self.assertEqual(current["missing_required_fields"], [field])
-                denied = await self.call(
-                    "contoso_submit_request",
-                    {
-                        "request_id": current["request_id"],
-                        "revision": current["revision"],
-                    },
-                )
-                self.assertTrue(denied.is_error)
-                reopened = await self.call(
-                    "contoso_open_request",
-                    {
-                        "request_id": current["request_id"],
-                    },
-                )
-                self.assertEqual(reopened.structured_content, current)
-                restored = await self.call(
-                    "contoso_save_request",
-                    {
-                        "request_id": current["request_id"],
-                        "revision": current["revision"],
-                        field: brief[field],
-                    },
-                )
-                self.assertFalse(restored.is_error, restored.content)
-                current = restored.structured_content
-
-        self.assertEqual(
-            current["brief"],
-            {
-                **brief,
-                "systems_and_constraints": "",
-                "preferred_deadline": "",
-            },
-        )
-        self.assertEqual(current["missing_required_fields"], [])
-        submitted = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": current["request_id"],
-                "revision": current["revision"],
-            },
-        )
-        self.assertFalse(submitted.is_error, submitted.content)
-        self.assertEqual(submitted.structured_content["status"], "submitted")
-        self.assertEqual(submitted.structured_content["brief"], current["brief"])
-
-    async def test_repeated_intake_submission_returns_the_saved_outcome(self):
-        created = await self.call(
-            "contoso_create_request",
-            {
-                "requested_software": "Contractor timesheet approvals",
-                "business_objective": "Reduce manual follow-up.",
-                "capabilities": "Collect timesheets and send approval reminders.",
-                "decision_maker": "Customer operations lead",
-            },
-        )
-        self.assertFalse(created.is_error, created.content)
-        draft = created.structured_content
-        submitted = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": draft["revision"],
-            },
-        )
-        self.assertFalse(submitted.is_error, submitted.content)
-        outcome = submitted.structured_content
-        for revision in (draft["revision"], outcome["revision"]):
-            repeated = await self.call(
-                "contoso_submit_request",
-                {
-                    "request_id": draft["request_id"],
-                    "revision": revision,
-                },
-            )
-            self.assertFalse(repeated.is_error, repeated.content)
-            self.assertEqual(repeated.structured_content, outcome)
-        unrelated = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": '"unrelated"',
-            },
-        )
-        self.assertTrue(unrelated.is_error)
-        reopened = await self.call(
-            "contoso_open_request",
-            {
-                "request_id": draft["request_id"],
-            },
-        )
-        self.assertEqual(reopened.structured_content, outcome)
-
-    async def test_intake_submission_rejects_stale_revisions_and_racing_edits(self):
-        created = await self.call(
-            "contoso_create_request",
-            {
-                "requested_software": "Contractor timesheet approvals",
-                "business_objective": "Reduce manual follow-up.",
-                "capabilities": "Collect timesheets and send approval reminders.",
-                "decision_maker": "Customer operations lead",
-            },
-        )
-        self.assertFalse(created.is_error, created.content)
-        draft = created.structured_content
-        self.table.race_before_update = True
-        raced = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": draft["revision"],
-            },
-        )
-        self.assertTrue(raced.is_error)
-        opened = await self.call(
-            "contoso_open_request",
-            {
-                "request_id": draft["request_id"],
-            },
-        )
-        current = opened.structured_content
-        self.assertEqual(current["status"], "draft")
-        self.assertEqual(
-            current["brief"]["business_objective"], "A newer saved objective."
-        )
-        self.assertNotEqual(current["revision"], draft["revision"])
-        for operation in ("contoso_save_request", "contoso_submit_request"):
-            for revision in (draft["revision"], "*", "", '"old", *'):
-                with self.subTest(operation=operation, revision=revision):
-                    denied = await self.call(
-                        operation,
-                        {
-                            "request_id": draft["request_id"],
-                            "revision": revision,
-                        },
-                    )
-                    self.assertTrue(denied.is_error)
-        reopened = await self.call(
-            "contoso_open_request",
-            {
-                "request_id": draft["request_id"],
-            },
-        )
-        self.assertEqual(reopened.structured_content, current)
-        submitted = await self.call(
-            "contoso_submit_request",
-            {
-                "request_id": draft["request_id"],
-                "revision": current["revision"],
-            },
-        )
-        self.assertFalse(submitted.is_error, submitted.content)
-        self.assertEqual(submitted.structured_content["status"], "submitted")
-        self.assertEqual(submitted.structured_content["brief"], current["brief"])
-
-    async def test_open_reads_the_customers_saved_request(self):
-        result = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
-        self.assertFalse(result.is_error, result.content)
-        self.assertEqual(
-            result.structured_content,
-            {
-                "request_id": REQUEST_ID,
-                "title": "Contractor timesheet approvals",
-                "requested_software": "Contractor timesheet approvals",
-                "business_objective": "Reduce manual timesheet follow-up.",
-                "capabilities": "",
-                "systems_and_constraints": "",
-                "decision_maker": "",
-                "preferred_deadline": "",
-                "missing_required_fields": ["capabilities", "decision_maker"],
-                "status": "draft",
-                "next_action": "Review and save your request details, then submit when ready.",
-                "revision": '"1"',
-                "view": "intake",
-                "brief": {
-                    "requested_software": "Contractor timesheet approvals",
-                    "business_objective": "Reduce manual timesheet follow-up.",
-                    "capabilities": "",
-                    "systems_and_constraints": "",
-                    "decision_maker": "",
-                    "preferred_deadline": "",
-                },
-                "questions": [],
-                "answers": {},
-                "question_set_revision": None,
-                "missing_required_answers": [],
-            },
-        )
-
-    async def test_list_returns_owned_requests_and_filters_for_customer_attention(self):
-        row = deepcopy(self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", REQUEST_ID)])
-        row.update(RowKey="CONTOSO-DEMO-003", Status="submitted")
-        self.table.rows[(row["PartitionKey"], row["RowKey"])] = row
-        other = deepcopy(row)
-        other.update(
-            PartitionKey=f"contoso:{TENANT}:{OTHER_CUSTOMER}",
-            RowKey="OTHER-CUSTOMER",
-            Status="needs_clarification",
-        )
-        self.table.rows[(other["PartitionKey"], other["RowKey"])] = other
-        unrelated = deepcopy(row)
-        unrelated.update(RowKey="UNRELATED", DemoId="another-demo")
-        self.table.rows[(unrelated["PartitionKey"], unrelated["RowKey"])] = unrelated
-        listed = await self.call("contoso_list_requests", {})
-        self.assertFalse(listed.is_error, listed.content)
-        self.assertEqual(
-            [row["request_id"] for row in listed.structured_content["requests"]],
-            [REQUEST_ID, CLARIFICATION_ID, "CONTOSO-DEMO-003"],
-        )
-        attention = await self.call("contoso_list_requests", {"needs_attention": True})
-        self.assertFalse(attention.is_error, attention.content)
-        self.assertEqual(
-            [row["request_id"] for row in attention.structured_content["requests"]],
-            [REQUEST_ID, CLARIFICATION_ID],
-        )
-        self.assertEqual(
-            attention.structured_content["requests"][1]["status"], "needs_clarification"
+        self.assertNotIn(
+            "revision", descriptors["contoso_submit_request"].input_schema["properties"]
         )
         self.assertIn(
-            "questions", attention.structured_content["requests"][1]["next_action"]
+            "answers", descriptors["contoso_submit_answers"].input_schema["required"]
         )
 
-    async def test_open_returns_saved_brief_questions_and_partial_answers(self):
+    async def test_review_is_prefilled_without_storage_access_or_a_saved_draft(self):
+        before = deepcopy(self.table.rows)
+        with (
+            verified({"tid": TENANT, "oid": CUSTOMER, "scp": "ToolForge.MCP.Access"}),
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "azure.data.tables.TableClient.from_connection_string",
+                side_effect=AssertionError("Review accessed storage"),
+            ),
+        ):
+            async with Client(self.server) as client:
+                result = await client.call_tool(
+                    "contoso_review_request",
+                    {
+                        "requested_software": BRIEF["requested_software"],
+                        "preferred_deadline": BRIEF["preferred_deadline"],
+                    },
+                )
+        self.assertFalse(result.is_error, result.content)
+        review = result.structured_content
+        self.assertEqual(review["view"], "review")
+        self.assertRegex(review["submission_id"], r"^[0-9a-f]{32}$")
+        self.assertNotIn("request_id", review)
+        self.assertEqual(
+            review["brief"]["requested_software"], BRIEF["requested_software"]
+        )
+        self.assertEqual(
+            review["brief"]["preferred_deadline"], BRIEF["preferred_deadline"]
+        )
+        self.assertEqual(review["brief"]["decision_maker"], "")
+        self.assertEqual(
+            review["missing_required_fields"],
+            ["business_objective", "capabilities", "decision_maker"],
+        )
+        self.assertEqual(self.table.rows, before)
+
+    async def test_submission_creates_the_first_record_with_the_reviewed_brief(self):
+        review = await self.call(
+            "contoso_review_request", {**BRIEF, "decision_maker": ""}
+        )
+        before = deepcopy(self.table.rows)
+        self.assertEqual(len(before), 2)
         result = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
+            "contoso_submit_request",
+            {
+                "submission_id": review.structured_content["submission_id"],
+                **BRIEF,
+            },
         )
         self.assertFalse(result.is_error, result.content)
-        current = result.structured_content
-        self.assertEqual(current["view"], "clarification")
-        self.assertEqual(current["question_set_revision"], "clarification-1")
-        self.assertEqual(current["questions"], QUESTIONS)
-        self.assertEqual(current["answers"], {"approval_owner": "Engagement lead"})
+        saved = result.structured_content
+        self.assertEqual(saved["status"], "submitted")
+        self.assertEqual(saved["view"], "status")
+        self.assertEqual(saved["brief"], BRIEF)
         self.assertEqual(
-            current["missing_required_answers"],
-            ["reminder_schedule", "notify_contractors"],
+            saved["request_id"], "REQUEST-" + review.structured_content["submission_id"]
         )
-        self.assertEqual(
-            current["brief"],
-            {
-                "requested_software": "Contractor timesheet approvals",
-                "business_objective": "Reduce manual timesheet follow-up.",
-                "capabilities": "Submit weekly timesheets and route approvals.",
-                "systems_and_constraints": "Microsoft Teams and the existing project list.",
-                "decision_maker": "Customer operations lead",
-                "preferred_deadline": "Pilot next month",
-            },
-        )
-
-    async def test_partial_answers_keep_types_and_can_clear_an_answer(self):
-        saved = await self.call(
-            "contoso_save_answers",
-            {
-                "request_id": CLARIFICATION_ID,
-                "answers": {
-                    "notify_contractors": False,
-                    "notes": "Include a weekly summary.",
-                },
-                "revision": '"1"',
-                "question_set_revision": "clarification-1",
-            },
-        )
-        self.assertFalse(saved.is_error, saved.content)
-        self.assertEqual(saved.structured_content["status"], "needs_clarification")
-        self.assertEqual(
-            saved.structured_content["answers"],
-            {
-                "approval_owner": "Engagement lead",
-                "notify_contractors": False,
-                "notes": "Include a weekly summary.",
-            },
-        )
-        self.assertEqual(
-            saved.structured_content["missing_required_answers"], ["reminder_schedule"]
-        )
-        cleared = await self.call(
-            "contoso_save_answers",
-            {
-                "request_id": CLARIFICATION_ID,
-                "answers": {"reminder_schedule": "Weekly", "notes": None},
-                "revision": saved.structured_content["revision"],
-                "question_set_revision": "clarification-1",
-            },
-        )
-        self.assertFalse(cleared.is_error, cleared.content)
+        self.assertEqual(len(self.table.rows), len(before) + 1)
+        self.server = self.new_server()
         opened = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
+            "contoso_open_request", {"request_id": saved["request_id"]}
         )
-        self.assertEqual(opened.structured_content, cleared.structured_content)
-        self.assertEqual(
-            opened.structured_content["answers"],
-            {
-                "approval_owner": "Engagement lead",
-                "notify_contractors": False,
-                "reminder_schedule": "Weekly",
-            },
-        )
-        self.assertEqual(opened.structured_content["missing_required_answers"], [])
+        self.assertEqual(opened.structured_content, saved)
 
-    async def test_submission_requires_saved_required_answers_and_moves_to_review(self):
-        incomplete = await self.call(
-            "contoso_submit_answers",
-            {
-                "request_id": CLARIFICATION_ID,
-                "revision": '"1"',
-                "question_set_revision": "clarification-1",
-            },
-        )
-        self.assertTrue(incomplete.is_error)
-        self.assertIn("reminder_schedule", incomplete.content[0].text)
-        saved = await self.call(
-            "contoso_save_answers",
-            {
-                "request_id": CLARIFICATION_ID,
-                "answers": {"reminder_schedule": "Weekly", "notify_contractors": False},
-                "revision": '"1"',
-                "question_set_revision": "clarification-1",
-            },
-        )
-        submitted = await self.call(
-            "contoso_submit_answers",
-            {
-                "request_id": CLARIFICATION_ID,
-                "revision": saved.structured_content["revision"],
-                "question_set_revision": "clarification-1",
-            },
-        )
-        self.assertFalse(submitted.is_error, submitted.content)
-        self.assertEqual(submitted.structured_content["status"], "in_review")
-        self.assertEqual(submitted.structured_content["view"], "status")
-        self.assertEqual(
-            submitted.structured_content["next_action"],
-            "Your request is being reviewed.",
-        )
-        self.assertIs(
-            submitted.structured_content["answers"]["notify_contractors"], False
-        )
-        self.server = MCPServer("replacement-contoso-server", extensions=[Apps()])
-        for tool_id in (
-            "contoso_open_request",
-            "contoso_save_request",
-            "contoso_list_requests",
-            "contoso_save_answers",
-            "contoso_submit_answers",
+    async def test_invalid_briefs_do_not_create_records(self):
+        before = deepcopy(self.table.rows)
+        for field in (
+            "requested_software",
+            "business_objective",
+            "capabilities",
+            "decision_maker",
         ):
-            register_catalog_tool(self.server, tool_id)
-        reopened = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
-        )
-        self.assertEqual(reopened.structured_content, submitted.structured_content)
-        attention = await self.call("contoso_list_requests", {"needs_attention": True})
-        self.assertEqual(
-            [row["request_id"] for row in attention.structured_content["requests"]],
-            [REQUEST_ID],
-        )
+            for value in ("", "  ", None, 42, "x" * 4001):
+                with self.subTest(field=field, value=str(value)[:20]):
+                    result = await self.call(
+                        "contoso_submit_request",
+                        {
+                            "submission_id": SUBMISSION_ID,
+                            **BRIEF,
+                            field: value,
+                        },
+                    )
+                    self.assertTrue(result.is_error)
+        for value in ("", "*", "../other", "a" * 31, "A" * 32):
+            result = await self.call(
+                "contoso_submit_request", {"submission_id": value, **BRIEF}
+            )
+            self.assertTrue(result.is_error)
+        for extra in ({"customer_id": OTHER_CUSTOMER}, {"revision": '"1"'}):
+            result = await self.call(
+                "contoso_submit_request",
+                {"submission_id": SUBMISSION_ID, **BRIEF, **extra},
+            )
+            self.assertTrue(result.is_error)
+        self.assertEqual(self.table.rows, before)
 
-    async def test_repeated_submission_returns_one_saved_outcome(self):
-        row = self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)]
-        row["Answers"] = json.dumps(
-            {
-                "approval_owner": "Engagement lead",
-                "reminder_schedule": "Daily",
-                "notify_contractors": False,
-            }
-        )
-        arguments = {
-            "request_id": CLARIFICATION_ID,
-            "revision": '"1"',
-            "question_set_revision": "clarification-1",
-        }
-        first = await self.call("contoso_submit_answers", arguments)
+    async def test_repeated_submission_returns_one_record_and_rejects_changed_payload(
+        self,
+    ):
+        args = {"submission_id": SUBMISSION_ID, **BRIEF}
+        first = await self.call("contoso_submit_request", args)
         self.assertFalse(first.is_error, first.content)
-        repeated = await self.call("contoso_submit_answers", arguments)
-        self.assertFalse(repeated.is_error, repeated.content)
+        row_id = (
+            f"contoso:{TENANT}:{CUSTOMER}",
+            first.structured_content["request_id"],
+        )
+        etag = self.table.rows[row_id].metadata["etag"]
+        self.server = self.new_server()
+        repeated = await self.call("contoso_submit_request", args)
         self.assertEqual(repeated.structured_content, first.structured_content)
-        current_repeat = await self.call(
-            "contoso_submit_answers",
-            {**arguments, "revision": first.structured_content["revision"]},
+        self.assertEqual(len(self.table.rows), 3)
+        self.assertEqual(self.table.rows[row_id].metadata["etag"], etag)
+        changed = await self.call(
+            "contoso_submit_request", {**args, "business_objective": "Different work"}
         )
-        self.assertFalse(current_repeat.is_error, current_repeat.content)
-        self.assertEqual(current_repeat.structured_content, first.structured_content)
-        unrelated_revision = await self.call(
-            "contoso_submit_answers", {**arguments, "revision": '"unrelated"'}
-        )
-        self.assertTrue(unrelated_revision.is_error)
+        self.assertTrue(changed.is_error)
+        self.assertEqual(self.table.rows[row_id].metadata["etag"], etag)
         current = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
+            "contoso_open_request",
+            {"request_id": first.structured_content["request_id"]},
         )
         self.assertEqual(current.structured_content, first.structured_content)
 
-    async def test_invalid_answers_do_not_change_any_saved_answer(self):
-        for answers in (
-            {"unknown_question": "Invented"},
-            {"unknown_question": None},
-            {"notify_contractors": "false"},
-            {"notify_contractors": 0},
-            {"approval_owner": True},
-            {"reminder_schedule": "Hourly"},
-            {"approval_owner": "Changed", "notify_contractors": "yes"},
-        ):
-            with self.subTest(answers=answers):
-                result = await self.call(
-                    "contoso_save_answers",
-                    {
-                        "request_id": CLARIFICATION_ID,
-                        "answers": answers,
-                        "revision": '"1"',
-                        "question_set_revision": "clarification-1",
-                    },
-                )
-                self.assertTrue(result.is_error)
-        current = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
-        )
-        self.assertEqual(
-            current.structured_content["answers"], {"approval_owner": "Engagement lead"}
-        )
-        self.assertEqual(current.structured_content["revision"], '"1"')
-
-    async def test_record_and_question_revisions_protect_clarification_changes(self):
-        row = self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)]
-        row["Answers"] = json.dumps(
+    async def test_submission_collision_cannot_overwrite_an_unrelated_record(self):
+        row_id = (f"contoso:{TENANT}:{CUSTOMER}", "REQUEST-" + SUBMISSION_ID)
+        self.table.rows[row_id] = Row(
             {
-                "approval_owner": "Engagement lead",
-                "reminder_schedule": "Daily",
-                "notify_contractors": False,
+                "PartitionKey": row_id[0],
+                "RowKey": row_id[1],
+                "DemoId": "another-demo",
+                "Title": "Private unrelated data",
+                "BusinessObjective": "Do not expose",
+                "Status": "submitted",
             }
         )
-        row["QuestionSetRevision"] = "clarification-2"
-        row.metadata["etag"] = '"2"'
-        before = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
+        before = deepcopy(self.table.rows)
+        result = await self.call(
+            "contoso_submit_request", {"submission_id": SUBMISSION_ID, **BRIEF}
         )
-        for operation in ("contoso_save_answers", "contoso_submit_answers"):
-            for revision, question_revision in (
-                ('"1"', "clarification-2"),
-                ('"2"', "clarification-1"),
-                ("*", "clarification-2"),
-                ("", "clarification-2"),
-            ):
-                with self.subTest(
-                    operation=operation,
-                    revision=revision,
-                    question_revision=question_revision,
-                ):
-                    arguments = {
-                        "request_id": CLARIFICATION_ID,
-                        "revision": revision,
-                        "question_set_revision": question_revision,
-                    }
-                    if operation == "contoso_save_answers":
-                        arguments["answers"] = {"approval_owner": "Stale overwrite"}
-                    denied = await self.call(operation, arguments)
-                    self.assertTrue(denied.is_error)
-        current = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
-        )
-        self.assertEqual(current.structured_content, before.structured_content)
+        self.assertTrue(result.is_error)
+        self.assertNotIn("Private unrelated data", result.model_dump_json())
+        self.assertEqual(self.table.rows, before)
 
-    async def test_question_changes_during_save_or_submit_cannot_be_overwritten(self):
-        for operation in ("contoso_save_answers", "contoso_submit_answers"):
-            with self.subTest(operation=operation):
-                self.table = Table()
-                row = self.table.rows[
-                    (f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)
-                ]
-                row["Answers"] = json.dumps(
-                    {
-                        "approval_owner": "Engagement lead",
-                        "reminder_schedule": "Daily",
-                        "notify_contractors": False,
-                    }
-                )
-                self.table.question_race_before_update = True
-                arguments = {
-                    "request_id": CLARIFICATION_ID,
-                    "revision": '"1"',
-                    "question_set_revision": "clarification-1",
-                }
-                if operation == "contoso_save_answers":
-                    arguments["answers"] = {"approval_owner": "Racing overwrite"}
-                denied = await self.call(operation, arguments)
-                self.assertTrue(denied.is_error)
-                current = await self.call(
-                    "contoso_open_request", {"request_id": CLARIFICATION_ID}
-                )
-                self.assertEqual(
-                    current.structured_content["question_set_revision"],
-                    "clarification-2",
-                )
-                self.assertEqual(
-                    current.structured_content["answers"]["approval_owner"],
-                    "Engagement lead",
-                )
-                self.assertEqual(
-                    current.structured_content["status"], "needs_clarification"
-                )
-                self.assertEqual(current.structured_content["revision"], '"2"')
-
-    async def test_save_and_reopen_preserve_the_draft_and_other_fields(self):
-        saved = await self.call(
-            "contoso_save_request",
-            {
-                "request_id": REQUEST_ID,
-                "business_objective": "Approve contractor timesheets in one place.",
-                "revision": '"1"',
-            },
+    async def test_customer_identity_scopes_creation_reads_and_lists(self):
+        first = await self.call(
+            "contoso_submit_request", {"submission_id": SUBMISSION_ID, **BRIEF}
         )
-        self.assertFalse(saved.is_error, saved.content)
-        self.server = MCPServer("replacement-contoso-server", extensions=[Apps()])
-        register_catalog_tool(self.server, "contoso_open_request")
-        register_catalog_tool(self.server, "contoso_save_request")
-        opened = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
-        self.assertFalse(opened.is_error, opened.content)
-        self.assertEqual(opened.structured_content, saved.structured_content)
-        self.assertEqual(
-            opened.structured_content["business_objective"],
-            "Approve contractor timesheets in one place.",
-        )
-        self.assertEqual(
-            opened.structured_content["title"], "Contractor timesheet approvals"
-        )
-        self.assertEqual(opened.structured_content["status"], "draft")
-        self.assertEqual(opened.structured_content["revision"], '"2"')
-
-    async def test_other_users_and_application_callers_cannot_read_or_change_a_request(
-        self,
-    ):
-        self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", REQUEST_ID)].update(
-            Capabilities="Collect timesheets and send approval reminders.",
-            DecisionMaker="Customer operations lead",
-        )
-        clarification = self.table.rows[
-            (f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)
-        ]
-        clarification["Answers"] = json.dumps(
-            {
-                "approval_owner": "Engagement lead",
-                "reminder_schedule": "Daily",
-                "notify_contractors": False,
-            }
-        )
+        self.assertFalse(first.is_error, first.content)
         for claims in (
             {"tid": TENANT, "oid": OTHER_CUSTOMER, "scp": "ToolForge.MCP.Access"},
             {"tid": OTHER_CUSTOMER, "oid": CUSTOMER, "scp": "ToolForge.MCP.Access"},
-            {
-                "tid": TENANT,
-                "oid": CUSTOMER,
-                "roles": ["ToolForge.MCP.Access.Application"],
-            },
-            {"tid": TENANT, "oid": CUSTOMER, "scp": " ", "idtyp": "app"},
-            {
-                "tid": TENANT,
-                "oid": CUSTOMER,
-                "scp": "ToolForge.MCP.Access",
-                "idtyp": "app",
-            },
-            {"tid": TENANT, "scp": "ToolForge.MCP.Access"},
         ):
             with self.subTest(claims=claims):
                 opened = await self.call(
-                    "contoso_open_request", {"request_id": REQUEST_ID}, claims
-                )
-                changed = await self.call(
-                    "contoso_save_request",
-                    {
-                        "request_id": REQUEST_ID,
-                        "business_objective": "Unauthorized change",
-                        "revision": '"1"',
-                    },
+                    "contoso_open_request",
+                    {"request_id": first.structured_content["request_id"]},
                     claims,
                 )
                 self.assertTrue(opened.is_error)
-                self.assertTrue(changed.is_error)
-                intake_submission = await self.call(
-                    "contoso_submit_request",
-                    {"request_id": REQUEST_ID, "revision": '"1"'},
-                    claims,
-                )
-                self.assertTrue(intake_submission.is_error)
-                self.assertNotIn("Reduce manual timesheet", opened.model_dump_json())
                 listed = await self.call("contoso_list_requests", {}, claims)
-                self.assertNotIn(REQUEST_ID, listed.model_dump_json())
-                self.assertNotIn(CLARIFICATION_ID, listed.model_dump_json())
-                answer_change = await self.call(
-                    "contoso_save_answers",
+                self.assertEqual(listed.structured_content["requests"], [])
+                answers = await self.call(
+                    "contoso_submit_answers", self.clarification_arguments(), claims
+                )
+                self.assertTrue(answers.is_error)
+                own = await self.call(
+                    "contoso_submit_request",
                     {
-                        "request_id": CLARIFICATION_ID,
-                        "answers": {"approval_owner": "Unauthorized change"},
-                        "revision": '"1"',
-                        "question_set_revision": "clarification-1",
-                        "tenant_id": TENANT,
-                        "customer_id": CUSTOMER,
+                        "submission_id": SUBMISSION_ID,
+                        **BRIEF,
+                        "requested_software": "Another project",
                     },
                     claims,
                 )
-                submitted = await self.call(
-                    "contoso_submit_answers",
-                    {
-                        "request_id": CLARIFICATION_ID,
-                        "revision": '"1"',
-                        "question_set_revision": "clarification-1",
-                    },
-                    claims,
-                )
-                self.assertTrue(answer_change.is_error)
-                self.assertTrue(submitted.is_error)
-        current = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
-        self.assertEqual(
-            current.structured_content["business_objective"],
-            "Reduce manual timesheet follow-up.",
+                self.assertFalse(own.is_error, own.content)
+                self.assertEqual(own.structured_content["title"], "Another project")
+        original = await self.call(
+            "contoso_open_request",
+            {"request_id": first.structured_content["request_id"]},
         )
-        self.assertEqual(current.structured_content["revision"], '"1"')
-        current_answers = await self.call(
-            "contoso_open_request", {"request_id": CLARIFICATION_ID}
-        )
-        self.assertEqual(
-            current_answers.structured_content["status"], "needs_clarification"
-        )
-        self.assertEqual(current_answers.structured_content["revision"], '"1"')
-        self.assertEqual(
-            current_answers.structured_content["answers"]["approval_owner"],
-            "Engagement lead",
-        )
+        self.assertEqual(original.structured_content, first.structured_content)
 
-    async def test_intake_creation_uses_the_verified_customer_identity(self):
-        before = await self.call("contoso_list_requests", {})
-        for claims in (
-            {"tid": TENANT, "oid": OTHER_CUSTOMER, "scp": "ToolForge.MCP.Access"},
-            {"tid": OTHER_CUSTOMER, "oid": CUSTOMER, "scp": "ToolForge.MCP.Access"},
-        ):
-            with self.subTest(claims=claims):
-                created = await self.call(
-                    "contoso_create_request",
-                    {
-                        "requested_software": "Another customer's request",
-                    },
-                    claims,
-                )
-                self.assertFalse(created.is_error, created.content)
-                draft = created.structured_content
-                opened = await self.call(
-                    "contoso_open_request",
-                    {
-                        "request_id": draft["request_id"],
-                    },
-                    claims,
-                )
-                self.assertEqual(opened.structured_content, draft)
-                hidden = await self.call(
-                    "contoso_open_request",
-                    {
-                        "request_id": draft["request_id"],
-                    },
-                )
-                self.assertTrue(hidden.is_error)
+    async def test_application_and_incomplete_user_identities_cannot_use_the_workflow(
+        self,
+    ):
+        before = deepcopy(self.table.rows)
+        calls = {
+            "contoso_review_request": BRIEF,
+            "contoso_submit_request": {"submission_id": SUBMISSION_ID, **BRIEF},
+            "contoso_list_requests": {},
+            "contoso_open_request": {"request_id": CLARIFICATION_ID},
+            "contoso_submit_answers": self.clarification_arguments(),
+        }
         for claims in (
             {
                 "tid": TENANT,
@@ -1097,93 +472,210 @@ class ContosoRequestTests(unittest.IsolatedAsyncioTestCase):
             {"tid": TENANT, "scp": "ToolForge.MCP.Access"},
             {"oid": CUSTOMER, "scp": "ToolForge.MCP.Access"},
         ):
-            with self.subTest(claims=claims):
-                denied = await self.call("contoso_create_request", {}, claims)
-                self.assertTrue(denied.is_error)
-        after = await self.call("contoso_list_requests", {})
-        self.assertEqual(after.structured_content, before.structured_content)
+            for name, arguments in calls.items():
+                with self.subTest(name=name, claims=claims):
+                    result = await self.call(name, arguments, claims)
+                    self.assertTrue(result.is_error)
+        self.assertEqual(self.table.rows, before)
 
-    async def test_stale_and_wildcard_revisions_cannot_overwrite_current_data(self):
-        for revision in ('"old"', "*", " * ", "", '""', '"old", *'):
-            with self.subTest(revision=revision):
+    async def test_existing_drafts_remain_readable_without_being_changed(self):
+        before = deepcopy(self.table.rows)
+        result = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
+        self.assertFalse(result.is_error, result.content)
+        self.assertEqual(result.structured_content["status"], "draft")
+        self.assertEqual(result.structured_content["view"], "status")
+        self.assertEqual(
+            result.structured_content["brief"]["requested_software"],
+            "Contractor timesheet approvals",
+        )
+        self.assertEqual(result.structured_content["brief"]["capabilities"], "")
+        self.assertEqual(self.table.rows, before)
+
+    async def test_list_returns_owned_projects_and_attention(self):
+        row = deepcopy(self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", REQUEST_ID)])
+        row.update(RowKey="CONTOSO-DEMO-003", Status="submitted")
+        self.table.rows[(row["PartitionKey"], row["RowKey"])] = row
+        unrelated = deepcopy(row)
+        unrelated.update(RowKey="UNRELATED", DemoId="another-demo")
+        self.table.rows[(unrelated["PartitionKey"], unrelated["RowKey"])] = unrelated
+        listed = await self.call("contoso_list_requests", {})
+        self.assertEqual(
+            [row["request_id"] for row in listed.structured_content["requests"]],
+            [REQUEST_ID, CLARIFICATION_ID, "CONTOSO-DEMO-003"],
+        )
+        attention = await self.call("contoso_list_requests", {"needs_attention": True})
+        self.assertEqual(
+            [row["request_id"] for row in attention.structured_content["requests"]],
+            [REQUEST_ID, CLARIFICATION_ID],
+        )
+
+    async def test_open_returns_current_questions_and_saved_answers(self):
+        result = await self.call(
+            "contoso_open_request", {"request_id": CLARIFICATION_ID}
+        )
+        self.assertFalse(result.is_error, result.content)
+        current = result.structured_content
+        self.assertEqual(current["view"], "clarification")
+        self.assertEqual(current["questions"], QUESTIONS)
+        self.assertEqual(current["answers"], {"approval_owner": "Engagement lead"})
+        self.assertEqual(
+            current["missing_required_answers"],
+            ["reminder_schedule", "notify_contractors"],
+        )
+        self.assertEqual(current["question_set_revision"], "clarification-1")
+
+    async def test_incomplete_or_invalid_clarification_never_saves_partial_answers(
+        self,
+    ):
+        before = deepcopy(self.table.rows)
+        for answers in (
+            {"reminder_schedule": "Weekly"},
+            {**ANSWERS, "approval_owner": " "},
+            {**ANSWERS, "reminder_schedule": "Sometimes"},
+            {**ANSWERS, "notify_contractors": "false"},
+            {**ANSWERS, "notify_contractors": 0},
+            {**ANSWERS, "notify_contractors": None},
+            {**ANSWERS, "approval_owner": False},
+            {**ANSWERS, "unknown": "No such question"},
+        ):
+            with self.subTest(answers=answers):
                 result = await self.call(
-                    "contoso_save_request",
-                    {
-                        "request_id": REQUEST_ID,
-                        "business_objective": "Stale overwrite",
-                        "revision": revision,
-                    },
+                    "contoso_submit_answers",
+                    self.clarification_arguments(answers=answers),
                 )
                 self.assertTrue(result.is_error)
-        self.table.race_before_update = True
-        raced = await self.call(
-            "contoso_save_request",
+                self.assertEqual(self.table.rows, before)
+                self.assertEqual(
+                    self.table.rows[
+                        (f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)
+                    ].metadata["etag"],
+                    '"1"',
+                )
+
+    async def test_clarification_saves_answers_and_submits_together(self):
+        self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)][
+            "Answers"
+        ] = json.dumps(
             {
-                "request_id": REQUEST_ID,
-                "business_objective": "Racing overwrite",
-                "revision": '"1"',
-            },
+                "approval_owner": "Engagement lead",
+                "notes": "Remove this optional note",
+            }
         )
-        self.assertTrue(raced.is_error)
-        current = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
+        result = await self.call(
+            "contoso_submit_answers",
+            self.clarification_arguments(answers={**ANSWERS, "notes": None}),
+        )
+        self.assertFalse(result.is_error, result.content)
+        current = result.structured_content
+        self.assertEqual(current["status"], "in_review")
+        self.assertEqual(current["view"], "status")
         self.assertEqual(
-            current.structured_content["business_objective"], "A newer saved objective."
+            current["answers"], {"approval_owner": "Engagement lead", **ANSWERS}
         )
-        self.assertEqual(current.structured_content["revision"], '"2"')
-
-    async def test_non_draft_and_unrelated_records_are_not_editable(self):
-        row = self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", REQUEST_ID)]
-        row["Status"] = "submitted"
-        denied = await self.call(
-            "contoso_save_request",
-            {
-                "request_id": REQUEST_ID,
-                "business_objective": "Changed",
-                "revision": '"1"',
-            },
+        self.assertIs(current["answers"]["notify_contractors"], False)
+        self.assertEqual(current["missing_required_answers"], [])
+        self.server = self.new_server()
+        opened = await self.call(
+            "contoso_open_request", {"request_id": CLARIFICATION_ID}
         )
-        self.assertTrue(denied.is_error)
-        current = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
-        self.assertEqual(current.structured_content["status"], "submitted")
-        self.assertEqual(current.structured_content["revision"], '"1"')
-        row["DemoId"] = "unrelated-data"
-        hidden = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
-        self.assertTrue(hidden.is_error)
+        self.assertEqual(opened.structured_content, current)
+        attention = await self.call("contoso_list_requests", {"needs_attention": True})
+        self.assertEqual(
+            [row["request_id"] for row in attention.structured_content["requests"]],
+            [REQUEST_ID],
+        )
 
-    async def test_storage_configuration_and_errors_are_reported_without_secrets(self):
-        from azure.core.exceptions import ServiceRequestError
+    async def test_clarification_retry_preserves_one_outcome_and_rejects_changed_answers(
+        self,
+    ):
+        first = await self.call(
+            "contoso_submit_answers", self.clarification_arguments()
+        )
+        self.assertFalse(first.is_error, first.content)
+        current = first.structured_content
+        for revision in ('"1"', current["revision"]):
+            repeat = await self.call(
+                "contoso_submit_answers",
+                self.clarification_arguments(revision=revision),
+            )
+            self.assertEqual(repeat.structured_content, current)
+        changed = await self.call(
+            "contoso_submit_answers",
+            self.clarification_arguments(
+                answers={**ANSWERS, "notify_contractors": True}
+            ),
+        )
+        self.assertTrue(changed.is_error)
+        opened = await self.call(
+            "contoso_open_request", {"request_id": CLARIFICATION_ID}
+        )
+        self.assertEqual(opened.structured_content, current)
 
-        caller = {"tid": TENANT, "oid": CUSTOMER, "scp": "ToolForge.MCP.Access"}
-        with verified(caller), patch.dict(os.environ, {}, clear=True):
+    async def test_stale_record_or_question_revisions_cannot_overwrite_answers(self):
+        before = deepcopy(self.table.rows)
+        for revision in ('"old"', "*", " * ", "", '""', '"old", *'):
+            result = await self.call(
+                "contoso_submit_answers",
+                self.clarification_arguments(revision=revision),
+            )
+            self.assertTrue(result.is_error)
+            self.assertEqual(self.table.rows, before)
+        result = await self.call(
+            "contoso_submit_answers",
+            self.clarification_arguments(question_set_revision="old"),
+        )
+        self.assertTrue(result.is_error)
+        self.assertEqual(self.table.rows, before)
+        for race in ("race_before_update", "question_race_before_update"):
+            self.table = Table()
+            setattr(self.table, race, True)
+            result = await self.call(
+                "contoso_submit_answers", self.clarification_arguments()
+            )
+            self.assertTrue(result.is_error)
+            row = self.table.rows[(f"contoso:{TENANT}:{CUSTOMER}", CLARIFICATION_ID)]
+            self.assertEqual(
+                json.loads(row["Answers"]), {"approval_owner": "Engagement lead"}
+            )
+            self.assertEqual(row["Status"], "needs_clarification")
+
+    async def test_app_resource_can_be_read_without_storage_or_customer_data(self):
+        with patch.dict(os.environ, {}, clear=True):
+            async with Client(self.server) as client:
+                result = await client.read_resource("ui://contoso-request/app.html")
+        self.assertEqual(result.contents[0].mime_type, "text/html;profile=mcp-app")
+        html = result.contents[0].text
+        self.assertIn('id="submit-request"', html)
+        self.assertIn('id="submit-answers"', html)
+        self.assertNotIn('id="save"', html)
+        self.assertNotIn('class="brand"', html)
+        self.assertNotIn("synthetic-secret-not-for-output", html)
+
+    async def test_storage_errors_do_not_expose_configuration(self):
+        with (
+            verified({"tid": TENANT, "oid": CUSTOMER, "scp": "ToolForge.MCP.Access"}),
+            patch.dict(os.environ, {}, clear=True),
+        ):
             async with Client(self.server) as client:
                 result = await client.call_tool(
                     "contoso_open_request", {"request_id": REQUEST_ID}
                 )
         self.assertTrue(result.is_error)
         self.assertIn("CONTOSO_STORAGE_CONNECTION_STRING", result.content[0].text)
-        with patch.object(
-            Table,
-            "get_entity",
-            side_effect=ServiceRequestError("synthetic-secret-not-for-output"),
+        with (
+            verified({"tid": TENANT, "oid": CUSTOMER, "scp": "ToolForge.MCP.Access"}),
+            patch.dict(os.environ, ENVIRONMENT),
+            patch(
+                "azure.data.tables.TableClient.from_connection_string",
+                side_effect=ValueError("synthetic-secret-not-for-output"),
+            ),
         ):
-            failed = await self.call("contoso_open_request", {"request_id": REQUEST_ID})
-        self.assertTrue(failed.is_error)
-        self.assertIn("storage", failed.content[0].text)
-
-    async def test_app_resource_is_available_without_customer_data_or_storage_settings(
-        self,
-    ):
-        with patch.dict(os.environ, {}, clear=True):
             async with Client(self.server) as client:
-                tools = (await client.list_tools()).tools
-                entry = next(
-                    tool for tool in tools if tool.name == "contoso_open_request"
+                result = await client.call_tool(
+                    "contoso_submit_request", {"submission_id": SUBMISSION_ID, **BRIEF}
                 )
-                result = await client.read_resource(entry.meta["ui"]["resourceUri"])
-        self.assertEqual(result.contents[0].mime_type, "text/html;profile=mcp-app")
-        self.assertTrue(result.contents[0].text)
-        self.assertNotIn("Reduce manual timesheet follow-up.", result.contents[0].text)
-        self.assertNotIn("synthetic-secret-not-for-output", result.contents[0].text)
+        self.assertTrue(result.is_error)
+        self.assertNotIn("synthetic-secret-not-for-output", result.model_dump_json())
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@
       .hint, #next-action { font-size: .9rem; line-height: 1.5; }
       .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
       button { padding: 9px 15px; border: 1px solid GrayText; border-radius: 5px; font: inherit; color: inherit; background: Canvas; cursor: pointer; }
-      button[type="submit"] { background: #005fb8; border-color: #005fb8; color: white; }
+      button.primary { background: #005fb8; border-color: #005fb8; color: white; }
       button:disabled { opacity: .55; cursor: default; }
       :focus-visible { outline: 3px solid #0078d4; outline-offset: 3px; }
       #message { min-height: 1.5em; line-height: 1.5; margin-bottom: 0; }
@@ -45,26 +45,26 @@
       <form id="request-form" novalidate>
         <section id="intake-view" hidden aria-labelledby="intake-title">
           <h2 id="intake-title">Software request details</h2>
-          <p id="save-hint" class="hint">You can save an incomplete draft and return later. The four fields marked “required to submit” are needed only when you submit. Save draft does not submit your request.</p>
+          <p id="review-hint" class="hint">Review and edit the details below. They are saved only when you submit. Closing this form discards edits made here.</p>
           <div class="question">
             <label for="requested-software">Requested software (required to submit)</label>
-            <input id="requested-software" name="requested_software" type="text" maxlength="4000" aria-describedby="save-hint" disabled>
+            <input id="requested-software" name="requested_software" type="text" maxlength="4000" aria-describedby="review-hint" disabled>
           </div>
           <div class="question">
             <label for="business-objective">Business objective (required to submit)</label>
-            <textarea id="business-objective" name="business_objective" rows="5" maxlength="4000" aria-describedby="save-hint" disabled></textarea>
+            <textarea id="business-objective" name="business_objective" rows="5" maxlength="4000" aria-describedby="review-hint" disabled></textarea>
           </div>
           <div class="question">
             <label for="capabilities">Capabilities (required to submit)</label>
-            <textarea id="capabilities" name="capabilities" rows="3" maxlength="4000" aria-describedby="save-hint" disabled></textarea>
+            <textarea id="capabilities" name="capabilities" rows="3" maxlength="4000" aria-describedby="review-hint" disabled></textarea>
           </div>
           <div class="question">
             <label for="systems-and-constraints">Systems and constraints (optional)</label>
-            <textarea id="systems-and-constraints" name="systems_and_constraints" rows="3" maxlength="4000" aria-describedby="save-hint" disabled></textarea>
+            <textarea id="systems-and-constraints" name="systems_and_constraints" rows="3" maxlength="4000" aria-describedby="review-hint" disabled></textarea>
           </div>
           <div class="question">
             <label for="decision-maker">Decision maker (required to submit)</label>
-            <input id="decision-maker" name="decision_maker" type="text" maxlength="4000" aria-describedby="save-hint" disabled>
+            <input id="decision-maker" name="decision_maker" type="text" maxlength="4000" aria-describedby="review-hint" disabled>
           </div>
           <div class="question">
             <label for="preferred-deadline">Preferred deadline (optional)</label>
@@ -72,16 +72,16 @@
             <p id="deadline-hint" class="hint">Describe your preferred timing in your own words. A specific date is not required.</p>
           </div>
           <div id="missing-fields" hidden>
-            <p>Saved draft fields still needed to submit:</p>
+            <p>Fields still needed to submit:</p>
             <ul id="missing-fields-list"></ul>
           </div>
         </section>
         <section id="clarification-view" hidden aria-labelledby="clarification-title">
           <h2 id="clarification-title">Clarification</h2>
-          <p id="answers-hint" class="hint">You can save partial answers and return later. Complete the required answers before submitting.</p>
+          <p id="answers-hint" class="hint">Complete the required answers, then submit them together. Changes are saved only when you submit.</p>
           <div id="questions"></div>
           <div id="missing-answers" hidden>
-            <p>Saved answers still needed:</p>
+            <p>Answers still needed:</p>
             <ul id="missing-list"></ul>
           </div>
         </section>
@@ -90,15 +90,14 @@
           <dl id="saved-answers"></dl>
         </section>
         <div class="actions">
-          <button id="save" type="submit" hidden disabled>Save draft</button>
-          <button id="submit-request" type="button" aria-describedby="submit-request-hint" hidden disabled>Submit request</button>
-          <button id="submit-answers" type="button" aria-describedby="submit-hint" hidden disabled>Submit answers</button>
-          <button id="reload" type="button" disabled>Reload saved request</button>
+          <button id="submit-request" class="primary" type="button" aria-describedby="submit-request-hint" hidden disabled>Submit request</button>
+          <button id="submit-answers" class="primary" type="button" aria-describedby="submit-hint" hidden disabled>Submit answers</button>
+          <button id="reload" type="button" hidden disabled>Reload saved project</button>
         </div>
         <p id="submit-request-hint" class="hint" hidden></p>
         <p id="submit-hint" class="hint" hidden></p>
       </form>
-      <p id="message" role="status" aria-live="polite">Loading the saved request…</p>
+      <p id="message" role="status" aria-live="polite">Loading…</p>
     </main>
     <!-- app.js -->
   </body>

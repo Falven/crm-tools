@@ -1,4 +1,4 @@
-"""Shared Contoso request storage, identity checks, views, and MCP App."""
+"""Shared software request storage, identity checks, views, and MCP App."""
 
 import os
 from contextlib import contextmanager
@@ -28,6 +28,7 @@ from pydantic import (
 
 RESOURCE_URI = "ui://contoso-request/app.html"
 RequestId = Annotated[str, Field(strict=True, pattern=r"^[A-Za-z0-9_-]{1,128}$")]
+SubmissionId = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{32}$")]
 AnswerText = Annotated[str, Field(strict=True, max_length=4000)]
 IntakeText = Annotated[str, Field(strict=True, max_length=4000)]
 INTAKE_FIELDS = {
@@ -39,7 +40,10 @@ INTAKE_FIELDS = {
     "preferred_deadline": "PreferredDeadline",
 }
 REQUIRED_INTAKE_FIELDS = (
-    "requested_software", "business_objective", "capabilities", "decision_maker"
+    "requested_software",
+    "business_objective",
+    "capabilities",
+    "decision_maker",
 )
 QuestionSetRevision = Annotated[str, Field(strict=True, min_length=1, max_length=128)]
 Revision = Annotated[
@@ -115,7 +119,7 @@ def _clarification(entity, expected_revision: str | None = None):
         raise ToolError("The saved clarification is incomplete or invalid.") from None
     if expected_revision is not None and revision != expected_revision:
         raise ToolError(
-            "The clarification questions changed. Reopen the request before saving."
+            "The clarification questions changed. Reopen the project before submitting."
         )
     return questions, answers, revision
 
@@ -165,7 +169,7 @@ def _storage():
     except ResourceNotFoundError:
         raise ToolError("Request not found.") from None
     except ResourceModifiedError:
-        raise ToolError("This request changed. Reopen it before saving.") from None
+        raise ToolError("This project changed. Reopen it before submitting.") from None
     except (AzureError, ValueError):
         # Azure errors can include configured URLs or credentials; keep them out of Tool output.
         raise ToolError(
@@ -178,8 +182,7 @@ def _owned_request(table: TableClient, partition: str, request_id: str):
     if entity.get("DemoId") != "contoso-demo":
         raise ToolError("Request not found.")
     _validate_request(entity)
-    # Validate retained clarification data before any conditional mutation, so a
-    # corrupt legacy draft cannot be changed and only then fail while rendering.
+    # Validate retained questions before any write can change the record.
     _clarification(entity)
     return entity
 
@@ -204,7 +207,7 @@ def _validate_request(entity):
 
 def _next_action(status: str) -> str:
     return {
-        "draft": "Review and save your request details, then submit when ready.",
+        "draft": "This saved draft has not been submitted.",
         "needs_clarification": "Answer the questions and submit your clarification.",
         "submitted": "Your request has been submitted for review.",
         "in_review": "Your request is being reviewed.",
@@ -217,14 +220,8 @@ def _brief(entity) -> dict[str, str]:
     return {field: entity.get(column, "") for field, column in INTAKE_FIELDS.items()}
 
 
-def _missing_intake_fields(entity) -> list[str]:
-    brief = _brief(entity)
+def _missing_intake_fields(brief) -> list[str]:
     return [field for field in REQUIRED_INTAKE_FIELDS if not brief[field].strip()]
-
-
-def _check_revision(entity, revision: str) -> None:
-    if revision != entity.metadata["etag"]:
-        raise ToolError("This request changed. Reopen it before saving or submitting.")
 
 
 def _view(entity, revision: str) -> dict[str, Any]:
@@ -232,16 +229,16 @@ def _view(entity, revision: str) -> dict[str, Any]:
     brief = _brief(entity)
     return {
         **brief,
-        "missing_required_fields": _missing_intake_fields(entity),
+        "missing_required_fields": _missing_intake_fields(brief),
         "request_id": entity["RowKey"],
         "title": entity["Title"],
         "business_objective": entity["BusinessObjective"],
         "status": entity["Status"],
         "next_action": _next_action(entity["Status"]),
         "revision": revision,
-        "view": {"draft": "intake", "needs_clarification": "clarification"}.get(
-            entity["Status"], "status"
-        ),
+        "view": "clarification"
+        if entity["Status"] == "needs_clarification"
+        else "status",
         "brief": brief,
         "questions": [question.model_dump(exclude_none=True) for question in questions],
         "answers": answers,
@@ -251,11 +248,11 @@ def _view(entity, revision: str) -> dict[str, Any]:
 
 
 def contoso_open_request(request_id: RequestId) -> dict[str, Any]:
-    """Reopen the signed-in customer's saved request by ID; never create or change it.
+    """Open the signed-in customer's saved software project by request ID.
 
-    Returns the six flat intake fields, current revision, missing required fields,
-    status, and shared App, plus any saved invoice clarification questions and
-    answers. Use this to resume a draft or review a conflict before another edit.
+    Returns the saved brief, status, next action, clarification questions, answers,
+    and current revisions, plus an App. Never creates or changes a record.
+    Existing drafts remain readable; new requests are stored only on submission.
     """
     partition = _customer_partition()
     with _storage() as table:
@@ -275,11 +272,11 @@ def contoso_request_app() -> str:
     )
 
 
-def _strict_intake_inputs(server: MCPServer, name: str) -> None:
+def _strict_inputs(server: MCPServer, name: str) -> None:
     """Keep flat signature schemas but reject ignored/overposted mutation fields.
 
     The pinned SDK defaults to dropping unknown arguments; configure only the
-    intake Tools' generated models, following the catalog's existing pattern.
+    request Tools' generated models, following the catalog's existing pattern.
     """
     tool = server._tool_manager.get_tool(name)
     if tool is None:
@@ -288,18 +285,12 @@ def _strict_intake_inputs(server: MCPServer, name: str) -> None:
     model.model_config = {**model.model_config, "extra": "forbid", "strict": True}
     model.model_rebuild(force=True)
     tool.parameters = model.model_json_schema(by_alias=True)
-    # The save function's None defaults distinguish omitted strings internally,
-    # not a customer-visible null value. Do not advertise an invalid null default
-    # that a chat/App client could automatically send for an omitted field.
-    for field in tool.parameters.get("properties", {}).values():
-        if field.get("type") == "string" and field.get("default", "") is None:
-            field.pop("default")
 
 
 def register(server: MCPServer) -> None:
     server.add_tool(
         contoso_open_request,
-        title="Open software request",
+        title="Open software project",
         meta={"ui": {"resourceUri": RESOURCE_URI}},
         annotations=ToolAnnotations(
             read_only_hint=True,
