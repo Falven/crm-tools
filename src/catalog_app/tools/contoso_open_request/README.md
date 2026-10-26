@@ -24,6 +24,12 @@ Missing values become blank strings. It returns `view=review`, the brief,
 missing required fields, and a random `submission_id`. It requires a verified
 customer but does not access storage. The ID is a retry key, not a saved project.
 
+Empty form controls show field hints while their labels remain visible. Review
+and submission advertise the same meanings in their MCP input schemas so agents
+can explain missing details in conversation. Constraints and timing are optional;
+preferred timing is confirmed in the team's proposal. Customers must not include
+credentials. This workflow has no file uploads or upload verification.
+
 Submit accepts the same complete brief and that `submission_id`. Requested
 software, objective, capabilities, and decision maker must be nonblank. Systems
 or constraints and the deadline are optional. Approximate deadlines remain text.

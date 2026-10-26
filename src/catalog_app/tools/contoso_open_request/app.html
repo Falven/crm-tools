@@ -14,6 +14,7 @@
       .details { margin: 0 0 24px; font-size: .9rem; }
       label { display: block; margin-bottom: 8px; font-weight: 600; }
       input, textarea, select { display: block; width: 100%; padding: 12px; border: 1px solid GrayText; border-radius: 6px; font: inherit; color: inherit; background: Canvas; }
+      input::placeholder, textarea::placeholder { color: GrayText; opacity: 1; }
       textarea { resize: vertical; min-height: 96px; }
       .question { margin: 20px 0; }
       summary { cursor: pointer; font-weight: 600; }
@@ -45,31 +46,31 @@
       <form id="request-form" novalidate>
         <section id="intake-view" hidden aria-labelledby="intake-title">
           <h2 id="intake-title">Software request details</h2>
-          <p id="review-hint" class="hint">Review and edit the details below. They are saved only when you submit. Closing this form discards edits made here.</p>
+          <p id="review-hint" class="hint">Review and edit the details below. They are saved only when you submit. Closing this form discards edits made here. Do not include credentials.</p>
           <div class="question">
             <label for="requested-software">Requested software (required to submit)</label>
-            <input id="requested-software" name="requested_software" type="text" maxlength="4000" aria-describedby="review-hint" disabled>
+            <input id="requested-software" name="requested_software" type="text" placeholder="A short name for your request" maxlength="4000" aria-describedby="review-hint" disabled>
           </div>
           <div class="question">
             <label for="business-objective">Business objective (required to submit)</label>
-            <textarea id="business-objective" name="business_objective" rows="5" maxlength="4000" aria-describedby="review-hint" disabled></textarea>
+            <textarea id="business-objective" name="business_objective" rows="5" placeholder="The outcome you need and why it matters." maxlength="4000" aria-describedby="review-hint" disabled></textarea>
           </div>
           <div class="question">
             <label for="capabilities">Capabilities (required to submit)</label>
-            <textarea id="capabilities" name="capabilities" rows="3" maxlength="4000" aria-describedby="review-hint" disabled></textarea>
+            <textarea id="capabilities" name="capabilities" rows="3" placeholder="What the software should do, as far as you know it." maxlength="4000" aria-describedby="review-hint" disabled></textarea>
           </div>
           <div class="question">
             <label for="systems-and-constraints">Systems and constraints (optional)</label>
-            <textarea id="systems-and-constraints" name="systems_and_constraints" rows="3" maxlength="4000" aria-describedby="review-hint" disabled></textarea>
+            <textarea id="systems-and-constraints" name="systems_and_constraints" rows="3" placeholder="Tools, integrations, data and rules the work must respect." maxlength="4000" aria-describedby="review-hint" disabled></textarea>
           </div>
           <div class="question">
             <label for="decision-maker">Decision maker (required to submit)</label>
-            <input id="decision-maker" name="decision_maker" type="text" maxlength="4000" aria-describedby="review-hint" disabled>
+            <input id="decision-maker" name="decision_maker" type="text" placeholder="Who approves scope and budget?" maxlength="4000" aria-describedby="review-hint" disabled>
           </div>
           <div class="question">
             <label for="preferred-deadline">Preferred deadline (optional)</label>
-            <input id="preferred-deadline" name="preferred_deadline" type="text" maxlength="4000" aria-describedby="deadline-hint" disabled>
-            <p id="deadline-hint" class="hint">Describe your preferred timing in your own words. A specific date is not required.</p>
+            <input id="preferred-deadline" name="preferred_deadline" type="text" placeholder="Your preferred timing, if any" maxlength="4000" aria-describedby="deadline-hint" disabled>
+            <p id="deadline-hint" class="hint">Approximate timing is fine. This is a preference, not a commitment; the team confirms timing in the proposal.</p>
           </div>
           <div id="missing-fields" hidden>
             <p>Fields still needed to submit:</p>

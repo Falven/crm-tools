@@ -31,6 +31,31 @@ RequestId = Annotated[str, Field(strict=True, pattern=r"^[A-Za-z0-9_-]{1,128}$")
 SubmissionId = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{32}$")]
 AnswerText = Annotated[str, Field(strict=True, max_length=4000)]
 IntakeText = Annotated[str, Field(strict=True, max_length=4000)]
+RequestedSoftware = Annotated[
+    IntakeText, Field(description="A short name for the software you need.")
+]
+BusinessObjective = Annotated[
+    IntakeText, Field(description="The outcome you need and why it matters.")
+]
+Capabilities = Annotated[
+    IntakeText,
+    Field(description="What the software should do, as far as you know it."),
+]
+SystemsAndConstraints = Annotated[
+    IntakeText,
+    Field(
+        description="Optional. Tools, integrations, data and rules the work must respect. Do not include credentials."
+    ),
+]
+DecisionMaker = Annotated[
+    IntakeText, Field(description="Who approves scope and budget on your side.")
+]
+PreferredDeadline = Annotated[
+    IntakeText,
+    Field(
+        description="Optional. Your preferred timing, including approximate dates. This is a preference, not a commitment; the team confirms timing in the proposal."
+    ),
+]
 INTAKE_FIELDS = {
     "requested_software": "Title",
     "business_objective": "BusinessObjective",

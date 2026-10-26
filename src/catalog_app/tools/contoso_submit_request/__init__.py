@@ -7,8 +7,13 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from ..contoso_open_request import (
     INTAKE_FIELDS,
-    IntakeText,
+    BusinessObjective,
+    Capabilities,
+    DecisionMaker,
+    PreferredDeadline,
+    RequestedSoftware,
     SubmissionId,
+    SystemsAndConstraints,
     _brief,
     _customer_partition,
     _missing_intake_fields,
@@ -20,12 +25,12 @@ from ..contoso_open_request import (
 
 def contoso_submit_request(
     submission_id: SubmissionId,
-    requested_software: IntakeText,
-    business_objective: IntakeText,
-    capabilities: IntakeText,
-    decision_maker: IntakeText,
-    systems_and_constraints: IntakeText = "",
-    preferred_deadline: IntakeText = "",
+    requested_software: RequestedSoftware,
+    business_objective: BusinessObjective,
+    capabilities: Capabilities,
+    decision_maker: DecisionMaker,
+    systems_and_constraints: SystemsAndConstraints = "",
+    preferred_deadline: PreferredDeadline = "",
 ) -> dict[str, Any]:
     """Submit the complete software brief after the customer's explicit confirmation.
 
