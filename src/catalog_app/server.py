@@ -1,64 +1,21 @@
 """Set up the Catalog's access checks and Tools on the chosen MCP server."""
 
-import os
 from typing import Any
 
 from mcp.server.apps import Apps
-from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.mcpserver.context import Context
 from mcp.types import ToolAnnotations
-from mcp_types import CallToolResult, InputRequiredResult
-from starlette.applications import Starlette
 
-from . import credentials
-from .auth import MiseAuth, MiseRequestContextMiddleware
-from .hosting import HostedMCPServer
+from .mise import MiseAuth, MiseMCPServer as server_class
 
 
-def create_server(**kwargs: Any) -> HostedMCPServer:
-    auth = MiseAuth(
-        tenant_id=os.environ["TOOLFORGE_MCP_ENTRA_TENANT_ID"],
-        audience=os.environ["TOOLFORGE_MCP_ENTRA_AUDIENCE"],
-        permission=os.environ["TOOLFORGE_MCP_ENTRA_PERMISSION"],
-        resource_url=os.environ["TOOLFORGE_MCP_RESOURCE_URL"],
-        client_id=os.environ["TOOLFORGE_MCP_ENTRA_CLIENT_ID"],
-        client_secret=os.environ.get("TOOLFORGE_MCP_ENTRA_CLIENT_SECRET"),
-        managed_identity_client_id=os.environ.get(
-            "TOOLFORGE_MCP_ENTRA_MANAGED_IDENTITY_CLIENT_ID"
-        ),
-    )
-
-    class CatalogServer(HostedMCPServer):
-        async def call_tool(
-            self,
-            name: str,
-            arguments: dict[str, Any],
-            context: Context[dict[str, Any], Any] | None = None,
-        ) -> CallToolResult | InputRequiredResult:
-            """Keep the caller's credential open for this Tool call, then close it."""
-            # Skip this setup for direct Python calls that have no MCP request.
-            if context is None:
-                return await super().call_tool(name, arguments, context)
-            # Preserve the details needed to sign in again before the MCP Python
-            # library converts errors to plain text.
-            return await credentials.run_with_caller(
-                auth, get_access_token(), super().call_tool(name, arguments, context)
-            )
-
-        def streamable_http_app(self, **kwargs: Any) -> Starlette:
-            app = super().streamable_http_app(**kwargs)
-            app.add_middleware(MiseRequestContextMiddleware)
-            return app
-
-    server_class = CatalogServer
+def create_server(**kwargs: Any) -> server_class:
     server = server_class(
         name="toolforge",
         title="",
         description="",
         instructions="",
+        authentication=MiseAuth.from_env(),
         extensions=[Apps()],
-        auth=auth.settings,
-        token_verifier=auth,
         **kwargs,
     )
     tool_directory = server.tool_directory

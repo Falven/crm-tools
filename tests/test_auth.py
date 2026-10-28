@@ -6,9 +6,9 @@ from unittest.mock import Mock, patch
 
 import jwt
 from starlette.requests import Request
-from catalog_app.auth import _http_request
+from catalog_app.mise import _http_request
 
-from catalog_app.auth import MiseAuth
+from catalog_app.mise import MiseAuth
 
 
 class MiseAuthenticationTest(unittest.IsolatedAsyncioTestCase):
@@ -20,7 +20,7 @@ class MiseAuthenticationTest(unittest.IsolatedAsyncioTestCase):
         )
         module = SimpleNamespace(Mise=lambda: mise, MiseValidationInput=SimpleNamespace)
 
-        with patch("catalog_app.auth.import_module", return_value=module):
+        with patch("catalog_app.mise.import_module", return_value=module):
             verifier = MiseAuth("tenant", "audience", "read", "https://example.com/mcp", client_id="client")
 
             request = Request(

@@ -6,7 +6,7 @@ Close them when the Tool call ends and tell the client if sign-in is needed.
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from contextvars import ContextVar
 from threading import RLock
 from typing import TYPE_CHECKING, Any
@@ -27,7 +27,7 @@ class ReauthorizationRequired(Exception):
 
 
 class _Invocation:
-    def __init__(self, auth: CatalogAuth, caller: MCPAccessToken | None) -> None:
+    def __init__(self, auth: CatalogAuth | None, caller: MCPAccessToken | None) -> None:
         self._auth = auth
         self._caller = caller
         self._stack = ExitStack()
@@ -42,7 +42,7 @@ class _Invocation:
             if self._credential is None:
                 manager = (
                     self._auth.delegated_credential(self._caller)
-                    if self._caller is not None
+                    if self._auth is not None and self._caller is not None
                     else None
                 )
                 if manager is None:
@@ -84,7 +84,7 @@ def get_caller_credential() -> TokenCredential:
 
 
 async def run_with_caller(
-    auth: CatalogAuth,
+    auth: CatalogAuth | None,
     caller: MCPAccessToken | None,
     tool_call: Awaitable[CallToolResult | InputRequiredResult],
 ) -> CallToolResult | InputRequiredResult:
@@ -93,32 +93,27 @@ async def run_with_caller(
     Tell the client if the caller needs to sign in again.
     """
     invocation = _Invocation(auth, caller)
-    token = _caller.set(invocation)
-    try:
-        return await tool_call
-    except Exception as error:
-        # A sign-in error may be inside another Tool error.
-        current: BaseException | None = error
-        while current is not None:
-            if isinstance(current, ReauthorizationRequired):
-                return CallToolResult(
-                    content=[
-                        TextContent(
-                            type="text",
-                            text="The caller must sign in again before this tool can continue.",
-                        )
-                    ],
-                    is_error=True,
-                    _meta={
-                        "toolforge/reauthorization": {
-                            **({"claims": current.claims} if current.claims else {})
-                        }
-                    },
-                )
-            current = current.__cause__ or current.__context__
-        raise
-    finally:
+    with _caller.set(invocation), closing(invocation):
         try:
-            invocation.close()
-        finally:
-            _caller.reset(token)
+            return await tool_call
+        except Exception as error:
+            # A sign-in error may be inside another Tool error.
+            current: BaseException | None = error
+            while current is not None:
+                if isinstance(current, ReauthorizationRequired):
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text",
+                                text="The caller must sign in again before this tool can continue.",
+                            )
+                        ],
+                        is_error=True,
+                        _meta={
+                            "toolforge/reauthorization": {
+                                **({"claims": current.claims} if current.claims else {})
+                            }
+                        },
+                    )
+                current = current.__cause__ or current.__context__
+            raise

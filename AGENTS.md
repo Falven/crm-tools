@@ -75,25 +75,30 @@ generated lock in the same commit.
 `src/catalog_app/__main__.py` owns transport and private supervision controls;
 `hosting.py` owns SDK integration, Tool scopes, and invocation attribution.
 `src/catalog_app/server.py` constructs its own MCP Python SDK v2 server class
-and composes Catalog authentication.
+and selects MISE with `authentication=MiseAuth.from_env()`.
 `name`, `title`, `description`, and `instructions` are constructor arguments;
 `**kwargs` supplies hosting options. The **Server** page edits
 literal `title` and `instructions` values through an explicit **Commit** action
 that commits and pushes the source change.
 
-`src/catalog_app/auth.py` defines the `CatalogAuth` provider. Import and
-construct the chosen provider in `src/catalog_app/server.py`. It implements
-the official Model Context Protocol Python SDK (`mcp`
-package) `TokenVerifier`, exposes SDK `AuthSettings`, and optionally supplies
-an Azure Core `TokenCredential` for a delegated caller. This Catalog’s `MiseAuth`
-accepts user and application tokens through MISE. Keep its wheel in `wheelhouse/`
-and its declared Linux ICU dependency. MISE errors deny access.
-`server.py` reads its settings from the
-environment at startup and passes them to the constructor. MISE requires the client ID at startup. Other OBO settings remain
-optional until a Tool requests a delegated credential. A custom provider can
-return `None` for delegation.
-Changing this bearer provider does not change web or Copilot token acquisition
-or add a nonbearer HTTP authentication flow.
+`src/catalog_app/auth.py` defines the generic `CatalogAuth` contract and typed
+`CallerIdentity` projection. A provider supplies native SDK `AuthSettings`,
+verifies tokens into native `AccessToken` objects with a verified `client_id`,
+projects user/application identity through `caller_identity`, and optionally
+supplies delegated Azure Core credential contexts. Choose a provider through
+`authentication=` in `server.py`; hosting supplies invocation reporting and
+credential cleanup.
+
+`src/catalog_app/mise.py` supplies `MiseAuth` and the `MiseMCPServer` adapter that
+provides the HTTP request context MISE needs during bearer verification. Keep
+the MISE wheel in `wheelhouse/` and its declared Linux ICU dependency. MISE
+errors deny access. `MiseAuth.from_env()` reads the existing environment settings
+once at startup; its explicit constructor remains available. MISE requires the
+client ID at startup. Other OBO settings remain optional until a Tool requests
+a delegated credential. Custom providers interpret their own claims and may
+return `None` for delegation. See [Authentication and credentials](README.md#authentication-and-credentials)
+for the provider interface and replacement steps. Changing this bearer provider
+leaves web and agent token acquisition with their existing owners.
 
 During an authenticated Tool call,
 `mcp.server.auth.middleware.auth_context.get_access_token()` provides the
