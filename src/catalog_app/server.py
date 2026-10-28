@@ -92,20 +92,6 @@ def create_server(**kwargs: Any) -> server_class:
         )
         _strict_inputs(server, "contoso_submit_answers")
 
-    with tool_directory("dinner_ideas"):
-        from .tools.dinner_ideas import dinner_ideas
-
-        server.add_tool(
-            dinner_ideas,
-            title="90-day dinner ideas",
-            annotations=ToolAnnotations(
-                read_only_hint=True,
-                destructive_hint=False,
-                idempotent_hint=True,
-                open_world_hint=False,
-            ),
-        )
-
     with tool_directory("customer_information"):
         from .tools.customer_information import register as register_customer_information
 
