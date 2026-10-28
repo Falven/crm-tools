@@ -1,5 +1,10 @@
 # ToolForge repository
 
+Use the repository directory selected through the native workspace as the
+authoring scope. A Session starts a chat with an independent Sandbox checkout.
+Create or change source according to the user's task; Session creation does not
+generate a Tool or publish a commit.
+
 ## Layout and Tool contract
 
 Each Tool lives in `src/catalog_app/tools/<tool_id>/`, with its entry module
@@ -8,8 +13,8 @@ is its Tool ID; renaming the package changes that identity. A simple Tool is a
 plain typed function in that module. `src/catalog_app/server.py` explicitly
 imports and registers it with `server.add_tool()` after constructing the server;
 source files alone are not discovered. Keep the import and registration inside
-`with tool_directory("<tool_id>"):`. The `server.tool_directory` binding supports
-both standalone and supervised execution.
+`with tool_directory("<tool_id>"):`. The `server.tool_directory` binding supports both standalone and supervised
+execution.
 This ToolForge scope attributes calls and startup failures to the Tool ID and lets a faulty
 Tool fail without hiding healthy siblings.
 
@@ -28,9 +33,8 @@ the Tool package; paths relative to `__file__` locate these assets independently
 of the working directory.
 
 Text or structured return data supports clients that cannot render Apps.
-An App's assets and handlers are published with its Tool. A successful App result
-exposes **Open App** on the completed reply and an entry in ToolForge's
-**View App** sidebar panel for that session.
+An App's assets and handlers are published with its Tool. ToolForge displays the
+interface associated with a successful App result and supports its MCP interactions.
 
 The naming convention for Tool IDs and tool names is lowercase snake_case.
 The registered function's name is its MCP name even when re-exported from a
@@ -43,31 +47,26 @@ The signature defines the input schema. The docstring supplies the default Tool
 description of inputs, outputs, and side effects for calling agents. The return
 value is sent back to the caller.
 
-## Copilot Skills
-
-The Sandbox’s preinstalled `skills` CLI supports project installs from the
-repository root: `skills add <source> --agent universal -y`.
-Usage is available through `skills --help`.
-Global installs (`--global`) live in the ephemeral Sandbox filesystem and will
-not persist across sessions.
-The Sandbox provides a preconfigured CLI and browser for `agent-browser`.
-
 ## Python environment and dependencies
 
 The repository-root `pyproject.toml` defines shared Python configuration.
 `[project].requires-python` selects Python. Additional dependencies are declared
-there or in workspace package manifests. The installable `catalog-app` project
-owns the complete MCP execution application and its dependencies under
-`src/catalog_app/`, including the SDK, transport, authentication, and telemetry.
-Management runs in a separate environment and supplies no execution dependencies.
+there or in workspace package manifests. The installable `catalog-app` project owns the complete MCP execution
+application and its dependencies under `src/catalog_app/`, including the SDK,
+transport, authentication, and telemetry. Catalog Initialization copies this
+source into each Catalog Repository. Management runs in a separate environment
+and supplies no execution dependencies.
 
-`uv.lock` is the dependency lock. In ToolForge sandboxes, the Git pre-commit
-hook runs `uv sync --all-packages` and stages the resulting lock when a
-fully staged dependency manifest changes.
+`uv.lock` is the dependency lock. Fully stage dependency manifest changes before
+committing; the Sandbox hook validates installation and stages the resulting
+lock on success. Include the changed manifests and generated lock in the same
+commit.
 
-Outside the hook, `uv sync --all-packages` from the repository root updates the
-environment and lock. Dependency updates include the changed manifests and
-generated lock in the same commit.
+Use native uv synchronization within the selected workspace directory. If the
+required project metadata or local dependencies are outside that scope, report
+what is missing and keep source editing available. A broader workspace needs
+the user's directory selection; do not acquire extra source or create another
+lock to bypass missing shared configuration.
 
 ## MCP runtime and authentication
 
@@ -85,9 +84,8 @@ that commits and pushes the source change.
 `CallerIdentity` projection. A provider supplies native SDK `AuthSettings`,
 verifies tokens into native `AccessToken` objects with a verified `client_id`,
 projects user/application identity through `caller_identity`, and optionally
-supplies delegated Azure Core credential contexts. Choose a provider through
-`authentication=` in `server.py`; hosting supplies invocation reporting and
-credential cleanup.
+supplies delegated Azure Core credential contexts. Choose a provider in
+`server.py`; hosting supplies invocation reporting and credential cleanup.
 
 `src/catalog_app/mise.py` supplies `MiseAuth` and the `MiseMCPServer` adapter that
 provides the HTTP request context MISE needs during bearer verification. Keep
@@ -109,27 +107,24 @@ provides the provider's invocation-scoped Azure Core `TokenCredential` for
 downstream APIs. `catalog_app.credentials` handles the generic call lifecycle;
 it closes the credential when the Tool call ends. Do not retain that credential.
 `MiseAuth` owns OBO exchange and reauthorization. `get_token()` requests the
-target API's authorized scopes. Application-only calls cannot use the default
+target API's authorized scopes. Application-only calls cannot use the MISE provider's
 OBO credential. Terminal execution has no MCP caller context.
 
-Shared Tool credentials are configured under **Server → Environment variables**.
+Shared Tool credentials are configured under **Environment variables**.
 These values are available to all Tools on the server and kept out of Git.
 
 ## Publication
 
 Changes publish when their commit reaches the configured remote branch.
 ToolForge's Source Control pushes after committing; terminal commits require
-an explicit push. ToolForge automatically pulls that branch and restarts the
-MCP application, which can take a few seconds. **Server → Tools** shows
-activation; a successful push does not establish that the changed Tool is being
-served.
+an explicit push. The MCP Server automatically pulls that branch and restarts the
+MCP application, which can take a few seconds. Inspect MCP Server Status under
+**MCP**, then use **Inspector** to discover and call the advertised Tool. A
+successful push or connected Inspector does not establish that the changed Tool
+is being served.
 
-Enable and Disable remove or add one comment layer around the Tool's
-registration block in `server.py`; the implementation remains editable.
-A manually authored Tool with an active registration block publishes normally
-without a separate Enable action. UI New Tool creates a commented block in a
-general repository Session. Edit the Tool and uncomment its `server.py` block
-before publishing, or use **Tools → Enable**. Editing only the implementation
-leaves a disabled Tool disabled. Delete removes the registration block and Tool
-folder. Each UI action commits and
-pushes immediately.
+Enable or disable a Tool by editing its import and registration block in
+`server.py` and publishing through ordinary Git. A commented registration leaves
+the implementation editable; editing only that implementation keeps it disabled.
+Create, rename, or remove Tool source through ordinary Sandbox files and Git.
+ToolForge has no separate Tool management actions.

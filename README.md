@@ -24,6 +24,47 @@ the configured Foundry agent and saved customer records can continue to work.
 See the [request workflow](src/catalog_app/tools/contoso_open_request/README.md)
 for Tool contracts, App behavior, and storage requirements.
 
+## Interactive MCP Apps
+
+An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) adds an
+interactive interface, such as a form or dashboard, to a Tool result. ToolForge
+displays the interface associated with a successful App result and supports its
+interactions with the MCP server. Other MCP clients need MCP Apps support to
+display the interface; clients without it still receive the Tool's result.
+
+The App's files and handlers are published with its Tool. Change a Tool's
+availability by editing its registration and publishing through ordinary Git.
+
+## Publish changes
+
+This Repository owns its complete execution application and locked dependencies.
+`src/catalog_app/server.py` constructs the server; `python -m catalog_app` runs
+the supervised HTTP application. SDK, authentication, transport, and execution
+integration changes publish together with `pyproject.toml` and `uv.lock`.
+
+Push commits to `main` to publish them. ToolForge's Source Control pushes after
+a commit. Fully stage dependency manifest changes; the Sandbox's pre-commit
+hook checks installation and stages `uv.lock` only on success. Dependency
+preparation needs the relevant project files and shared lock within the selected
+workspace directory. A narrower directory remains useful for source editing
+without a prepared Python environment.
+
+Check MCP Server Status under **MCP**. Open **Inspector**, select the connected
+server from Servers, then open Tools to discover and call the advertised Tool.
+A connection alone does not prove that the Tool is available.
+
+## Manage tools
+
+Start a native Session in the workspace directory where you want to work. The
+agent uses that Session's independent Sandbox to create or change source.
+Starting the Session does not generate a Tool or publish files.
+
+Enable or disable a Tool by editing its import and registration block in
+`server.py` and publishing through ordinary Git. A commented registration leaves
+the implementation and supporting files editable; MCP activation is reported
+separately. Editing a disabled Tool's implementation alone leaves it disabled.
+Rename or remove Tool source through the editor and Git.
+
 ## Authentication and credentials
 
 `authentication=MiseAuth.from_env()` in `src/catalog_app/server.py` verifies Microsoft Entra user and application tokens through MISE before Tool code runs. `src/catalog_app/mise.py` owns verification, on-behalf-of (OBO) exchange, and `MiseMCPServer`, the small server adapter that supplies the HTTP request context MISE needs. The pinned MISE wheel stays in `wheelhouse/`; Linux also uses the declared ICU dependency. Verification failures deny access.
@@ -46,7 +87,7 @@ For a custom provider that needs only the bearer token, replace the MISE import 
 ## Develop and verify
 
 ```sh
-uv run --frozen python -m unittest tests.test_contoso_request tests.test_auth -v
+uv run --frozen python -m unittest discover -s tests -v
 ```
 
 To rebuild the checked-in App bundle:
@@ -56,6 +97,5 @@ npm ci --prefix src/catalog_app/tools/contoso_open_request/frontend
 npm run build --prefix src/catalog_app/tools/contoso_open_request/frontend
 ```
 
-Commit and push changes to `main`. Confirm the applied commit in ToolForge before
-testing. Automated checks use controlled identity and storage fixtures; live
-configuration and client behavior must be checked through the deployed service.
+Automated checks use controlled identity and storage fixtures; live configuration
+and client behavior must be checked through the deployed service.
