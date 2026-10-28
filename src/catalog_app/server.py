@@ -135,4 +135,9 @@ def create_server(**kwargs: Any) -> HostedMCPServer:
         )
         _strict_inputs(server, "contoso_submit_answers")
 
+    with tool_directory("customer_ingestion"):
+        from .tools.customer_ingestion import register
+
+        register(server)
+
     return server
