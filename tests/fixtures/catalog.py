@@ -19,7 +19,7 @@ def register_catalog_tool(server, tool_id):
     with (
         patch.dict(os.environ, environment),
         patch(
-            "catalog_app.server.MiseAuth",
+            "catalog_app.server.MiseAuth.from_env",
             return_value=Mock(
                 settings=AuthSettings(
                     issuer_url="https://issuer.test",

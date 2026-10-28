@@ -11,7 +11,7 @@ import threading
 from importlib.metadata import version
 from ipaddress import ip_address
 from time import monotonic
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import uvicorn
 from mcp.server.transport_security import TransportSecuritySettings
@@ -183,12 +183,17 @@ def create_app(
             return
         log_token = None
         if private_control:
-            log_token = telemetry._log_context.set(
-                {
-                    "actor": "management",
-                    "correlationId": request.headers.get("x-correlation-id", "")[:256],
-                }
-            )
+            fields = {
+                "actor": "management",
+                "correlationId": request.headers.get("x-correlation-id", "")[:256],
+            }
+            for field, header in (
+                ("userName", "x-toolforge-user-name"),
+                ("userEmail", "x-toolforge-user-email"),
+            ):
+                if header in request.headers:
+                    fields[field] = unquote(request.headers[header])
+            log_token = telemetry._log_context.set(fields)
         try:
             await native_app(scope, receive, send)
         finally:
@@ -222,6 +227,9 @@ def create_app(
 
 
 def main() -> None:
+    startup_context = telemetry._log_context.set(
+        json.loads(os.environ.pop("TOOLFORGE_INTERNAL_STARTUP_CONTEXT", "{}"))
+    )
     telemetry.configure()
     if os.name == "posix" and os.getsid(0) != os.getpid():
         os.setsid()
@@ -264,6 +272,8 @@ def main() -> None:
         allowed_origins=allowed_origins,
     )
     telemetry._operator_log("info", "runtime.starting")
+    # Construction failures keep their context for the process exception hook.
+    telemetry._log_context.reset(startup_context)
 
     uvicorn.run(
         application,

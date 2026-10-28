@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Any
 from uuid import uuid4
@@ -11,8 +12,54 @@ from uuid import uuid4
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
+from mcp.shared.dispatcher import CallOptions
 
-from . import invocation, telemetry
+from . import credentials, telemetry
+from .auth import CatalogAuth
+
+
+class InvocationOutbound:
+    def __init__(self, outbound: Any, reporter: telemetry.InvocationReporter) -> None:
+        self.outbound = outbound
+        self.reporter = reporter
+
+    async def notify(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None,
+        opts: CallOptions | None = None,
+    ) -> None:
+        if telemetry._reporting_output.get():
+            await self.outbound.notify(method, params, opts)
+            return
+        if method == "notifications/message" and params is not None:
+            telemetry._operator_log(
+                params["level"],
+                "tool.log",
+                message=params["data"],
+                logger=params.get("logger"),
+            )
+        await self.reporter.wait(
+            self.reporter.enqueue(lambda: self.outbound.notify(method, params, opts))
+        )
+
+    async def progress(
+        self, progress: float, total: float | None = None, message: str | None = None
+    ) -> None:
+        if telemetry._reporting_output.get():
+            await self.outbound.progress(progress, total, message)
+            return
+        telemetry._operator_log(
+            "info", "tool.progress", progress=progress, total=total, message=message
+        )
+        await self.reporter.wait(
+            self.reporter.enqueue(
+                lambda: self.outbound.progress(progress, total, message)
+            )
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.outbound, name)
 
 
 class HostedMCPServer(MCPServer):
@@ -21,17 +68,24 @@ class HostedMCPServer(MCPServer):
     def __init__(
         self,
         *,
+        authentication: CatalogAuth | None = None,
         source_commit: str = "",
         trusted_client_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
+        self._authentication = authentication
         self._source_commit = source_commit
         self._trusted_client_ids = frozenset(trusted_client_ids or [])
         self.tool_ids_by_mcp_name: dict[str, str] = {}
         self.load_errors: dict[str, str] = {}
         self._tool_ids_by_registered_name: dict[str, str] = {}
         self._registering_tool_id: str | None = None
-        super().__init__(**kwargs)
+        if authentication is None:
+            super().__init__(**kwargs)
+        else:
+            super().__init__(
+                auth=authentication.settings, token_verifier=authentication, **kwargs
+            )
         self.middleware.append(self._observe_request)
 
     @contextmanager
@@ -126,115 +180,126 @@ class HostedMCPServer(MCPServer):
         if is_call:
             headers = getattr(ctx.request, "headers", {})
             caller = get_access_token()
-            claims = caller.claims or {} if caller is not None else {}
-            scopes = claims.get("scp")
-            delegated = isinstance(scopes, str) and bool(scopes.split())
+            identity = (
+                self._authentication.caller_identity(caller)
+                if self._authentication is not None and caller is not None
+                else {}
+            )
+            invalid_identity = (
+                self._authentication is not None
+                and caller is not None
+                and (
+                    not isinstance(identity, dict)
+                    or identity.get("principalType") not in {"user", "application"}
+                )
+            )
+            if invalid_identity:
+                identity = {}
+            delegated = identity.get("principalType") == "user"
             trusted_context = (
-                caller is not None
-                and caller.client_id in self._trusted_client_ids
-                and (claims.get("azp") or claims.get("appid")) == caller.client_id
+                caller is not None and caller.client_id in self._trusted_client_ids
             )
             fields = {
                 "actor": "mcp",
                 "correlationId": headers.get("x-correlation-id", "")[:256]
                 or uuid4().hex,
+                **identity,
             }
+            if caller is not None:
+                fields["clientId"] = caller.client_id
             if trusted_context:
                 supplied = (ctx.meta or {}).get("toolforge/context")
                 if isinstance(supplied, dict):
+                    if delegated and any(
+                        key in supplied for key in ("userId", "userName", "userEmail")
+                    ):
+                        for key in ("userId", "userName", "userEmail"):
+                            fields.pop(key, None)
                     for key in ("correlationId", "runId", "executionId") + (
                         ("userId", "userName", "userEmail") if delegated else ()
                     ):
                         value = supplied.get(key)
                         if isinstance(value, str) and value:
                             fields[key] = value[:256]
-                    if supplied.get("actor") in {"user", "copilot", "mcp", "system"}:
+                    if supplied.get("actor") in {"user", "agent", "mcp", "system"}:
                         fields["actor"] = supplied["actor"]
-            if caller is not None:
-                fields["clientId"] = caller.client_id
-                tenant_id = claims.get("tid")
-                object_id = claims.get("oid")
-                if isinstance(tenant_id, str) and tenant_id:
-                    fields["entraTenantId"] = tenant_id
-                if isinstance(object_id, str) and object_id:
-                    fields["entraObjectId"] = object_id
-                fields["principalType"] = "user" if delegated else "application"
-                if delegated:
-                    if isinstance(object_id, str) and object_id:
-                        fields.setdefault("userId", object_id)
-                    name = claims.get("name")
-                    if isinstance(name, str) and name:
-                        fields["userName"] = name
-                    email = claims.get("email") or claims.get("preferred_username")
-                    if isinstance(email, str) and email:
-                        fields["userEmail"] = email
             name = (ctx.params or {}).get("name")
             if isinstance(name, str):
                 fields["toolName"] = name
-        token = telemetry._log_context.set(fields)
-        error_token = invocation._invocation_error.set(None)
-        started = time.perf_counter()
-        failure: BaseException | None = None
-        result = None
-        try:
-            if is_call:
-                name = fields.get("toolName", "")
-                if tool_id := self._tool_ids_by_registered_name.get(name):
-                    fields["toolId"] = tool_id
-                    if self._source_commit:
-                        fields["version"] = self._source_commit
-                telemetry._operator_log("info", "tool.started")
-            result = await call_next(ctx)
-            return result
-        except BaseException as error:
-            failure = error
-            if not is_call:
-                telemetry._operator_log(
-                    "error",
-                    "mcp.request.failed",
-                    method=ctx.method,
-                    **telemetry._error_fields(error),
-                )
-            raise
-        finally:
-            if is_call:
-                failure = failure or invocation._invocation_error.get()
-                failed = failure is not None or (
-                    result.get("isError", False)
-                    if isinstance(result, dict)
-                    else getattr(result, "is_error", False)
-                )
-                telemetry._operator_log(
-                    "error" if failed else "info",
-                    "tool.completed",
-                    status="failed" if failed else "completed",
-                    isError=bool(failed),
-                    durationMs=round((time.perf_counter() - started) * 1000, 2),
-                    **telemetry._error_fields(failure),
-                )
-                if telemetry._telemetry_enabled and failed:
-                    from opentelemetry import trace
-                    from opentelemetry.trace import StatusCode
+        with telemetry._log_context.set(fields), telemetry._invocation_error.set(None):
+            started = time.perf_counter()
+            failure: BaseException | None = None
+            result = None
+            try:
+                if is_call and invalid_identity:
+                    raise ValueError(
+                        "Authentication provider caller_identity must return principalType 'user' or 'application'."
+                    )
+                if is_call:
+                    name = fields.get("toolName", "")
+                    if tool_id := self._tool_ids_by_registered_name.get(name):
+                        fields["toolId"] = tool_id
+                        if self._source_commit:
+                            fields["version"] = self._source_commit
+                    telemetry._operator_log("info", "tool.started")
+                result = await call_next(ctx)
+                return result
+            except BaseException as error:
+                failure = error
+                if not is_call:
+                    telemetry._operator_log(
+                        "error",
+                        "mcp.request.failed",
+                        method=ctx.method,
+                        **telemetry._error_fields(error),
+                    )
+                raise
+            finally:
+                if is_call:
+                    failure = failure or telemetry._invocation_error.get()
+                    failed = failure is not None or (
+                        result.get("isError", False)
+                        if isinstance(result, dict)
+                        else getattr(result, "is_error", False)
+                    )
+                    telemetry._operator_log(
+                        "error" if failed else "info",
+                        "tool.completed",
+                        status="failed" if failed else "completed",
+                        isError=bool(failed),
+                        durationMs=round((time.perf_counter() - started) * 1000, 2),
+                        **telemetry._error_fields(failure),
+                    )
+                    if telemetry._telemetry_enabled and failed:
+                        from opentelemetry import trace
+                        from opentelemetry.trace import StatusCode
 
-                    trace.get_current_span().set_status(StatusCode.ERROR)
-            invocation._invocation_error.reset(error_token)
-            telemetry._log_context.reset(token)
+                        trace.get_current_span().set_status(StatusCode.ERROR)
 
     async def call_tool(self, name: str, arguments: dict[str, Any], context=None):
         if context is None:
             return await super().call_tool(name, arguments, context)
-        reporter = invocation.InvocationReporter(context, asyncio.get_running_loop())
+        return await credentials.run_with_caller(
+            self._authentication,
+            get_access_token(),
+            self._call_with_reporting(name, arguments, context),
+        )
+
+    async def _call_with_reporting(self, name, arguments, context):
+        reporter = telemetry.InvocationReporter(context, asyncio.get_running_loop())
         session = context.request_context.session
         outbound = session._request_outbound
-        session._request_outbound = invocation.InvocationOutbound(outbound, reporter)
-        token = invocation._invocation_reporter.set(reporter)
+        session._request_outbound = InvocationOutbound(outbound, reporter)
         try:
-            return await super().call_tool(name, arguments, context)
-        except Exception as error:
-            invocation._invocation_error.set(error)
-            raise
+            with telemetry._invocation_reporter.set(reporter):
+                try:
+                    return await super().call_tool(name, arguments, context)
+                except BaseException as error:
+                    telemetry._invocation_error.set(error)
+                    if isinstance(error, asyncio.CancelledError):
+                        reporter.abort()
+                    raise
         finally:
-            invocation._invocation_reporter.reset(token)
             try:
                 await reporter.drain()
             finally:
