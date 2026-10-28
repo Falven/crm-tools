@@ -48,6 +48,7 @@ class MiseAuth:
         permission: str,
         resource_url: str,
         *,
+        scope: str,
         client_id: str,
         client_secret: str | None = None,
         managed_identity_client_id: str | None = None,
@@ -55,6 +56,7 @@ class MiseAuth:
         self.tenant_id = tenant_id.lower()
         self.audience = audience
         self.permission = permission
+        self.scope = scope
         self.client_id = client_id
         self.client_secret = client_secret
         self.managed_identity_client_id = managed_identity_client_id
@@ -63,7 +65,7 @@ class MiseAuth:
                 f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
             ),
             resource_server_url=AnyHttpUrl(resource_url),
-            required_scopes=[permission],
+            required_scopes=[scope],
         )
         if sys.platform == "linux":
             import icukit_pyicu
@@ -121,6 +123,7 @@ class MiseAuth:
             audience=os.environ["TOOLFORGE_MCP_ENTRA_AUDIENCE"],
             permission=os.environ["TOOLFORGE_MCP_ENTRA_PERMISSION"],
             resource_url=os.environ["TOOLFORGE_MCP_RESOURCE_URL"],
+            scope=os.environ["TOOLFORGE_MCP_ENTRA_SCOPE"],
             client_id=os.environ["TOOLFORGE_MCP_ENTRA_CLIENT_ID"],
             client_secret=os.environ.get("TOOLFORGE_MCP_ENTRA_CLIENT_SECRET"),
             managed_identity_client_id=os.environ.get(
@@ -154,6 +157,8 @@ class MiseAuth:
             roles = claims.get("roles", [])
             if isinstance(roles, list) and f"{self.permission}.Application" in roles:
                 scopes.append(self.permission)
+            if self.permission in scopes:
+                scopes.append(self.scope)
             return AccessToken(
                 token=token,
                 client_id=client_id,

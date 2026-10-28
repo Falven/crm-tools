@@ -84,6 +84,8 @@ For a custom provider that needs only the bearer token, replace the MISE import 
 
 `MiseAuth.from_env()` reads the existing environment settings once at startup. Its explicit `MiseAuth(...)` constructor remains available when settings come from elsewhere. MISE requires the client ID at startup. Other OBO settings are optional until a Tool requests a credential. `catalog_app.credentials.get_caller_credential()` returns the invocation-scoped Azure Core credential for downstream APIs; it closes when the Tool call ends, so do not retain it afterward. Application-only calls cannot use the MISE provider's OBO credential.
 
+`TOOLFORGE_MCP_ENTRA_SCOPE` is the full OAuth scope advertised to clients, such as `api://<application-id>/ToolForge.MCP.Access`. `TOOLFORGE_MCP_ENTRA_PERMISSION` is the short permission in the access token's `scp` claim, such as `ToolForge.MCP.Access`. The provider maps that verified permission or its `.Application` role to the full scope required by the MCP SDK.
+
 ## Develop and verify
 
 ```sh

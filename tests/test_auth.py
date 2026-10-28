@@ -21,7 +21,14 @@ class MiseAuthenticationTest(unittest.IsolatedAsyncioTestCase):
         module = SimpleNamespace(Mise=lambda: mise, MiseValidationInput=SimpleNamespace)
 
         with patch("catalog_app.mise.import_module", return_value=module):
-            verifier = MiseAuth("tenant", "audience", "read", "https://example.com/mcp", client_id="client")
+            verifier = MiseAuth(
+                "tenant",
+                "audience",
+                "read",
+                "https://example.com/mcp",
+                scope="api://mcp/read",
+                client_id="client",
+            )
 
             request = Request(
                 {
@@ -44,7 +51,7 @@ class MiseAuthenticationTest(unittest.IsolatedAsyncioTestCase):
                 )
                 user = await verifier.verify_token(delegated)
                 self.assertEqual(user.client_id, "user-client")
-                self.assertEqual(user.scopes, ["read"])
+                self.assertEqual(user.scopes, ["read", "api://mcp/read"])
                 self.assertEqual(user.claims["sub"], "user")
                 self.assertEqual(user.token, delegated)
                 validation_input = mise.validate.call_args.args[0]
@@ -64,7 +71,7 @@ class MiseAuthenticationTest(unittest.IsolatedAsyncioTestCase):
                 )
                 app = await verifier.verify_token(application)
                 self.assertEqual(app.client_id, "app-client")
-                self.assertEqual(app.scopes, ["read"])
+                self.assertEqual(app.scopes, ["read", "api://mcp/read"])
                 self.assertEqual(app.claims["roles"], ["read.Application"])
 
                 mise.validate.return_value = nullcontext(
@@ -78,7 +85,14 @@ class MiseAuthenticationTest(unittest.IsolatedAsyncioTestCase):
 
             mise.configure.return_value = nullcontext(SimpleNamespace(error_code=1))
             with self.assertRaisesRegex(RuntimeError, "MISE configuration failed"):
-                MiseAuth("tenant", "audience", "read", "https://example.com/mcp", client_id="client")
+                MiseAuth(
+                    "tenant",
+                    "audience",
+                    "read",
+                    "https://example.com/mcp",
+                    scope="api://mcp/read",
+                    client_id="client",
+                )
 
 
 if __name__ == "__main__":
