@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Customer information</title>
+  <style>
+    :root { color-scheme: light dark; font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); color: light-dark(#182b40, #e5edf7); background: light-dark(#ffffff, #17202d); }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: clamp(16px, 4vw, 28px); }
+    main { width: 100%; max-width: 760px; margin: 0 auto; }
+    header { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 22px; }
+    .icon { flex: 0 0 auto; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: light-dark(#eaf1ff, #243853); color: light-dark(#285ac6, #a2c3ff); }
+    h1 { margin: 0 0 6px; font-size: clamp(20px, 4vw, 25px); font-weight: 650; letter-spacing: -.5px; }
+    p { margin: 0; line-height: 1.6; }
+    .muted { color: light-dark(#56677b, #acbacb); font-size: 13px; }
+    .memory { display: flex; align-items: flex-start; gap: 10px; padding: 13px 15px; border: 1px solid light-dark(#d8e5da, #355747); border-radius: 10px; background: light-dark(#f5faf6, #1b2d26); margin-bottom: 22px; font-size: 12px; line-height: 1.6; color: light-dark(#36523f, #c0ddca); }
+    .dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: light-dark(#2e7d48, #88cba2); margin-top: 6px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px 20px; }
+    .wide { grid-column: 1 / -1; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 7px; }
+    input, textarea { display: block; width: 100%; max-width: 100%; border: 1px solid light-dark(#cbd4df, #516073); border-radius: 8px; background: light-dark(#fff, #1e2a39); color: inherit; padding: 11px 12px; font: inherit; font-size: 14px; line-height: 1.4; }
+    input::placeholder, textarea::placeholder { color: light-dark(#6f7f91, #9dacbd); opacity: 1; }
+    textarea { resize: vertical; min-height: 76px; }
+    #notes { min-height: 92px; }
+    input:focus, textarea:focus { border-color: light-dark(#346bcd, #90b5ff); }
+    :focus-visible { outline: 3px solid light-dark(#adc7fb, #7293c8); outline-offset: 3px; }
+    .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+    button { border: 1px solid light-dark(#cbd4df, #516073); border-radius: 8px; padding: 10px 15px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; color: inherit; background: light-dark(#ffffff, #202c3b); }
+    button:hover { background: light-dark(#f3f6fa, #2b394c); }
+    .primary { background: light-dark(#295fc7, #a2c3ff); color: light-dark(#fff, #132b50); border-color: transparent; }
+    .primary:hover { background: light-dark(#214fa8, #bbd3ff); }
+    .danger { color: light-dark(#a3222b, #ffb1b7); }
+    .confirmation { margin-top: 16px; padding: 14px; border: 1px solid light-dark(#dbbdc0, #88585e); border-radius: 8px; }
+    .confirmation .actions { margin-top: 12px; }
+    #status { min-height: 20px; margin-top: 12px; font-size: 12px; color: light-dark(#56677b, #acbacb); }
+    #review { border-top: 1px solid light-dark(#dbe2ea, #445163); margin-top: 22px; padding-top: 20px; }
+    h2 { font-size: 16px; margin: 0 0 6px; }
+    dl { margin: 12px 0 18px; }
+    .detail { display: grid; grid-template-columns: minmax(90px, .35fr) minmax(0, 1fr); gap: 16px; padding: 11px 0; border-bottom: 1px solid light-dark(#edf0f5, #354354); }
+    dt { font-size: 13px; color: light-dark(#56677b, #acbacb); }
+    dd { margin: 0; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    [hidden] { display: none !important; }
+    @media (max-width: 480px) { .grid { grid-template-columns: minmax(0, 1fr); } .detail { grid-template-columns: minmax(0, 1fr); gap: 5px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="icon" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></span>
+      <div><h1>Customer information</h1><p class="muted">A few details, all in one place. Every field is optional.</p></div>
+    </header>
+    <div class="memory"><span class="dot" aria-hidden="true"></span><p><strong>Memory only.</strong> Values update as you type and stay in this open form. Nothing is saved or sent to the server or assistant. Closing or reloading clears everything.</p></div>
+    <form id="customer-form" autocomplete="off">
+      <div class="grid">
+        <div><label for="full_name">Full name</label><input id="full_name" name="full_name" maxlength="200" placeholder="e.g. Alex Morgan" /></div>
+        <div><label for="company">Company</label><input id="company" name="company" maxlength="200" placeholder="Company or organization" /></div>
+        <div><label for="email">Email</label><input id="email" name="email" type="email" maxlength="254" placeholder="name@example.com" inputmode="email" spellcheck="false" autocapitalize="none" /></div>
+        <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel" maxlength="80" placeholder="Include country code if needed" /></div>
+        <div class="wide"><label for="address">Address</label><textarea id="address" name="address" maxlength="1000" rows="2" placeholder="Street, city, region, postal code, country"></textarea></div>
+        <div class="wide"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="4000" rows="3" placeholder="Anything else worth keeping handy"></textarea></div>
+      </div>
+      <div class="actions"><button class="primary" type="submit" id="review-button" aria-expanded="false" aria-controls="review">Review details</button><button type="button" id="clear-button" aria-expanded="false" aria-controls="clear-confirmation">Clear form</button></div>
+    </form>
+    <div id="clear-confirmation" class="confirmation" hidden>
+      <p>Clear all fields? This cannot be undone.</p>
+      <div class="actions"><button type="button" class="danger" id="confirm-clear">Yes, clear everything</button><button type="button" id="cancel-clear">Cancel</button></div>
+    </div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="review" aria-labelledby="review-heading" hidden>
+      <h2 id="review-heading" tabindex="-1">Current details</h2>
+      <p class="muted">A live preview, not a saved record.</p>
+      <dl id="details"></dl>
+      <button type="button" id="back-button">Back to form</button>
+    </section>
+  </main>
+  <!-- app.js -->
+</body>
+</html>
