@@ -24,6 +24,16 @@ the configured Foundry agent and saved customer records can continue to work.
 See the [request workflow](src/catalog_app/tools/contoso_open_request/README.md)
 for Tool contracts, App behavior, and storage requirements.
 
+## Estimate development cost and resources
+
+Call `contoso_estimate_request()` with no arguments to estimate the signed-in
+customer's latest saved software request using Azure Foundry `gpt-6.1-sol`.
+It returns cost ranges, person-hours, elapsed time, team needs, and an asset/materials
+inventory. MCP access and model inference use Microsoft Entra authentication;
+no model API key is required. Estimates are preliminary and are not saved.
+See the [estimate tool](src/catalog_app/tools/contoso_estimate_request/README.md)
+for identity permissions and behavior when no request has been saved.
+
 ## Interactive MCP Apps
 
 An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) adds an
