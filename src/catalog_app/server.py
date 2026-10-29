@@ -106,9 +106,4 @@ def create_server(**kwargs: Any) -> server_class:
             ),
         )
 
-    with tool_directory("customer_information"):
-        from .tools.customer_information import register as register_customer_information
-
-        register_customer_information(server)
-
     return server
