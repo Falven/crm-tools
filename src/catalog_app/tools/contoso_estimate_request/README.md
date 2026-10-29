@@ -43,15 +43,3 @@ required for request storage. No new secret or API-key setting is introduced.
 Credentials and the OpenAI client close after every invocation. Responses are
 requested with `store=False`, a 120-second client timeout, and no automatic retries.
 Empty/incomplete responses and Azure authentication/API failures return safe errors.
-
-## Checks
-
-From the repository root:
-
-```sh
-uv run --frozen python -m unittest tests.test_contoso_estimate_request -v
-```
-
-These tests use controlled MCP identity, storage, credential, and model fixtures;
-they do not establish live Foundry authorization. After publishing, call the tool
-through MCP using an account with a saved request to verify end-to-end inference.
