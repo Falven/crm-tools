@@ -97,10 +97,7 @@ def create_app(
             )
         expected_tool_ids = set(payload.get("enabledToolIds", []))
         registered_tool_ids = set(server.tool_ids_by_mcp_name.values())
-        if (
-            registered_tool_ids - expected_tool_ids
-            or set(server.load_errors) - expected_tool_ids
-        ):
+        if registered_tool_ids - expected_tool_ids:
             return JSONResponse(
                 {
                     "status": "failed",
@@ -108,7 +105,11 @@ def create_app(
                 },
                 status_code=409,
             )
-        load_errors = server.load_errors | {
+        load_errors = {
+            tool_id: error
+            for tool_id, error in server.load_errors.items()
+            if tool_id in expected_tool_ids
+        } | {
             tool_id: "Tool Directory registered no model-facing Tool."
             for tool_id in expected_tool_ids
             - registered_tool_ids
