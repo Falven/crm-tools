@@ -61,19 +61,21 @@ def contoso_estimate_request() -> dict[str, str]:
         }
 
     try:
-        with DefaultAzureCredential() as credential:
-            with OpenAI(
+        with (
+            DefaultAzureCredential() as credential,
+            OpenAI(
                 base_url=endpoint,
                 api_key=get_bearer_token_provider(credential, scope),
                 timeout=120.0,
                 max_retries=0,
-            ) as client:
-                response = client.responses.create(
-                    model=deployment,
-                    instructions=PROMPT,
-                    input=json.dumps(request, ensure_ascii=False),
-                    store=False,
-                )
+            ) as client,
+        ):
+            response = client.responses.create(
+                model=deployment,
+                instructions=PROMPT,
+                input=json.dumps(request, ensure_ascii=False),
+                store=False,
+            )
     except AzureError, OpenAIError:
         raise ToolError(
             "Foundry call failed. Check configuration and Entra permissions."
