@@ -5,19 +5,21 @@ import logging
 import os
 import re
 import secrets
-import signal
 import sys
-import threading
+from contextlib import asynccontextmanager
 from importlib.metadata import version
 from ipaddress import ip_address
-from time import monotonic
-from urllib.parse import unquote, urlsplit
+from typing import Any
+from urllib.parse import quote, unquote, urlsplit
 
 import uvicorn
+from mcp.server.auth.middleware.bearer_auth import RequireAuthMiddleware
+from mcp.server.auth.routes import build_resource_metadata_url
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import hosting, telemetry
@@ -28,7 +30,9 @@ def create_app(
     internal_token: str,
     resource_url: str,
     *,
-    catalog_commit: str = "",
+    catalog_commit: str,
+    launch: dict[str, Any],
+    secret_values: list[str],
     allowed_hosts: list[str] | None = None,
     allowed_origins: list[str] | None = None,
 ) -> ASGIApp:
@@ -50,60 +54,100 @@ def create_app(
             "http://localhost:*",
             "http://[::1]:*",
         ]
-    admission_error: str | None = (
-        "The Tool Server has not activated a Catalog Generation."
-    )
-    admission_deadline = 0.0
+    admission_error: str | None = "The MCP Application has not finished startup."
+    acknowledgement: dict[str, Any] | None = None
+    action_id = launch["actionId"]
+    git_revision = launch["gitRevision"]
 
-    def ready() -> bool:
-        return admission_error is None or monotonic() < admission_deadline
-
-    @server.custom_route("/healthz", methods=["GET"])
-    async def health(request: Request) -> JSONResponse:
-        return JSONResponse(
-            {
-                "status": "ok",
-                "pythonVersion": sys.version.split()[0],
-                "mcpSdkVersion": version("mcp"),
-                "ready": ready(),
-                "error": admission_error,
-            }
+    def safe_error(value: str | None) -> str | None:
+        if value is None:
+            return None
+        for secret in secret_values:
+            value = value.replace(secret, "[REDACTED]").replace(
+                quote(secret), "[REDACTED]"
+            )
+        value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
+        value = re.sub(
+            r"(?i)https?://[\w-]+\.vault\.azure\.net[^\s\"'<>)]*",
+            "[REDACTED_KEY_VAULT_URI]",
+            value,
+        )
+        value = re.sub(
+            r"(?i)/subscriptions/[^\s/]+/resourceGroups/[^\s/]+/providers/Microsoft\.ManagedIdentity/userAssignedIdentities/[^\s\"'<>)]*",
+            "[REDACTED_IDENTITY]",
+            value,
+        )
+        value = re.sub(r"(?i)(https?://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", value)
+        return re.sub(
+            r"(?i)([?&](?:sig|token|key|secret|password|access_token)=)[^&\s]+",
+            r"\1[REDACTED]",
+            value,
         )
 
-    @server.custom_route("/admission", methods=["POST"])
+    def ready() -> bool:
+        return acknowledgement is not None and admission_error is None
+
+    def observation() -> dict[str, Any]:
+        return {
+            "instanceId": launch["instanceId"],
+            "processId": launch["processId"],
+            "role": "mcp",
+            "state": "healthy" if ready() else "unhealthy",
+            "pid": os.getpid(),
+            "workerProcessId": launch["processId"],
+            "workerState": "running",
+            "workerExitCode": None,
+            "error": safe_error(admission_error),
+            "python": sys.executable,
+            "pythonVersion": sys.version.split()[0],
+            "mcpSdkVersion": version("mcp"),
+            "appliedCatalogCommit": catalog_commit
+            if acknowledgement is not None
+            else None,
+            "sourceRevision": launch["sourceRevision"],
+            "gitRevision": git_revision,
+            "requirementsRevision": launch["requirementsRevision"],
+            "requirementsLockRevision": launch["requirementsLockRevision"],
+            "environment": launch["environment"],
+            "tools": acknowledgement["tools"] if acknowledgement else [],
+            "toolIdsByMcpName": server.tool_ids_by_mcp_name,
+            "loadErrors": acknowledgement["loadErrors"] if acknowledgement else {},
+            "profile": acknowledgement["profile"] if acknowledgement else {},
+        }
+
+    async def health(request: Request) -> JSONResponse:
+        return JSONResponse(
+            {**observation(), "status": "ok", "ready": ready(), "actionId": action_id},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @server.custom_route("/readyz", methods=["GET"])
+    async def readiness(request: Request) -> Response:
+        return Response(
+            status_code=200 if ready() else 503, headers={"Cache-Control": "no-store"}
+        )
+
     async def update_admission(request: Request) -> JSONResponse:
-        nonlocal admission_error, admission_deadline
+        nonlocal admission_error, action_id, git_revision
         payload = await request.json()
         admission_error = (
             None
             if payload["ready"]
-            else payload.get("error") or "The Tool Server is unavailable."
+            else payload.get("error") or "The MCP Application is unavailable."
         )
-        admission_deadline = monotonic() + float(payload.get("graceSeconds", 0))
-        return JSONResponse(
-            {"status": "ok", "ready": ready(), "error": admission_error}
-        )
+        if "actionId" in payload:
+            action_id = payload["actionId"]
+        if "gitRevision" in payload:
+            git_revision = payload["gitRevision"]
+        return await health(request)
 
-    @server.custom_route("/activate", methods=["POST"])
-    async def activate(request: Request) -> JSONResponse:
-        payload = await request.json()
-        if payload.get("catalogCommit") != catalog_commit:
-            return JSONResponse(
-                {
-                    "status": "failed",
-                    "error": "Catalog Generation does not match the execution process.",
-                },
-                status_code=409,
-            )
-        expected_tool_ids = set(payload.get("enabledToolIds", []))
+    async def activate() -> None:
+        nonlocal acknowledgement, admission_error
+        expected_tool_ids = set(launch["toolVersions"])
         registered_tool_ids = set(server.tool_ids_by_mcp_name.values())
         if registered_tool_ids - expected_tool_ids:
-            return JSONResponse(
-                {
-                    "status": "failed",
-                    "error": "Managed Tool registrations do not match enabled Tool Directories.",
-                },
-                status_code=409,
+            raise RuntimeError(
+                "Managed Tool registrations do not match enabled Tool Directories."
             )
         load_errors = {
             tool_id: error
@@ -124,11 +168,14 @@ def create_app(
             )
         tools = await server.list_tools()
         acknowledgement = {
-            "status": "ok",
-            "catalogCommit": catalog_commit,
             "tools": [tool.model_dump(mode="json", by_alias=True) for tool in tools],
-            "toolIdsByMcpName": server.tool_ids_by_mcp_name,
-            "loadErrors": load_errors,
+            "loadErrors": {
+                tool_id: {
+                    "version": launch["toolVersions"][tool_id],
+                    "error": safe_error(error),
+                }
+                for tool_id, error in load_errors.items()
+            },
             "profile": {
                 "name": server.name,
                 "title": server.title,
@@ -137,13 +184,13 @@ def create_app(
                 "websiteUrl": str(server.website_url) if server.website_url else None,
             },
         }
+        admission_error = None
         telemetry._operator_log(
             "info",
             "runtime.catalog.applied",
             catalogCommit=catalog_commit,
-            toolCount=len(acknowledgement["tools"]),
+            toolCount=len(tools),
         )
-        return JSONResponse(acknowledgement)
 
     native_app = server.streamable_http_app(
         streamable_http_path="/mcp",
@@ -155,35 +202,63 @@ def create_app(
         ),
     )
 
+    async def public_status(request: Request) -> JSONResponse:
+        return JSONResponse(observation(), headers={"Cache-Control": "no-store"})
+
+    status_route = Route("/status", public_status, methods=["GET"])
+    authentication = server._authentication
+    if authentication is not None:
+        status_route.app = RequireAuthMiddleware(
+            status_route.app,
+            authentication.settings.required_scopes or [],
+            build_resource_metadata_url(authentication.settings.resource_server_url)
+            if authentication.settings.resource_server_url
+            else None,
+        )
+    native_app.routes.append(status_route)
+    native_lifespan = native_app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app):
+        nonlocal admission_error
+        async with native_lifespan(app):
+            await activate()
+            try:
+                yield
+            finally:
+                admission_error = "The MCP Application is stopping."
+
+    native_app.router.lifespan_context = lifespan
+    private_routes = {
+        "/healthz": ("GET", health),
+        "/admission": ("POST", update_admission),
+    }
+
     async def request_context(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await native_app(scope, receive, send)
             return
-        request = Request(scope)
-        private_control = request.url.path in {"/healthz", "/activate", "/admission"}
-        if private_control and not (
-            request.client
-            and ip_address(request.client.host).is_loopback
-            and secrets.compare_digest(
-                request.headers.get("authorization", ""), f"Bearer {internal_token}"
-            )
-        ):
-            await JSONResponse({"status": "unauthorized"}, status_code=401)(
-                scope, receive, send
-            )
-            return
-        if request.url.path.rstrip("/") == "/mcp" and not ready():
-            await JSONResponse(
-                {
-                    "error": "mcp_unavailable",
-                    "error_description": "The Tool Server is unavailable.",
-                },
-                status_code=503,
-                headers={"retry-after": "5"},
-            )(scope, receive, send)
-            return
-        log_token = None
-        if private_control:
+        request = Request(scope, receive)
+        private = private_routes.get(request.url.path)
+        if private is not None:
+            if not (
+                request.client
+                and ip_address(request.client.host).is_loopback
+                and secrets.compare_digest(
+                    request.headers.get("authorization", "").encode(),
+                    f"Bearer {internal_token}".encode(),
+                )
+            ):
+                await JSONResponse({"status": "unauthorized"}, status_code=401)(
+                    scope, receive, send
+                )
+                return
+            method, handler = private
+            if request.method != method:
+                await Response(status_code=405, headers={"Allow": method})(
+                    scope, receive, send
+                )
+                return
             fields = {
                 "actor": "management",
                 "correlationId": request.headers.get("x-correlation-id", "")[:256],
@@ -195,11 +270,23 @@ def create_app(
                 if header in request.headers:
                     fields[field] = unquote(request.headers[header])
             log_token = telemetry._log_context.set(fields)
-        try:
-            await native_app(scope, receive, send)
-        finally:
-            if log_token is not None:
+            try:
+                response = await handler(request)
+                await response(scope, receive, send)
+            finally:
                 telemetry._log_context.reset(log_token)
+            return
+        if request.url.path.rstrip("/") == "/mcp" and not ready():
+            await JSONResponse(
+                {
+                    "error": "mcp_unavailable",
+                    "error_description": "The MCP Application is unavailable.",
+                },
+                status_code=503,
+                headers={"retry-after": "5"},
+            )(scope, receive, send)
+            return
+        await native_app(scope, receive, send)
 
     wildcard_origins = [
         re.escape(origin[:-1]) + r"\d+"
@@ -232,19 +319,12 @@ def main() -> None:
         json.loads(os.environ.pop("TOOLFORGE_INTERNAL_STARTUP_CONTEXT", "{}"))
     )
     telemetry.configure()
-    if os.name == "posix" and os.getsid(0) != os.getpid():
-        os.setsid()
-    parent_fd = os.environ.pop("TOOLFORGE_PARENT_FD", None)
-    if parent_fd is not None:
-
-        def stop_with_parent() -> None:
-            os.read(int(parent_fd), 1)
-            if os.name == "posix":
-                os.killpg(os.getpgrp(), signal.SIGTERM)
-            else:
-                os.kill(os.getpid(), signal.SIGTERM)
-
-        threading.Thread(target=stop_with_parent, daemon=True).start()
+    launch = json.loads(os.environ.pop("TOOLFORGE_INTERNAL_APPLICATION"))
+    telemetry._process_context = {
+        "workerProcessId": launch["processId"],
+        "commit": launch["catalogCommit"],
+        "environmentRevision": launch["environment"]["appliedRevision"],
+    }
     catalog_commit = os.environ.pop("TOOLFORGE_CATALOG_COMMIT")
     internal_token = os.environ.pop("TOOLFORGE_INTERNAL_MCP_TOKEN")
     host = os.environ.pop("TOOLFORGE_MCP_HOST", "0.0.0.0")
@@ -256,6 +336,24 @@ def main() -> None:
     )
     trusted_client_ids = json.loads(
         os.environ.pop("TOOLFORGE_MCP_TRUSTED_CLIENT_IDS", "[]")
+    )
+    # Tool imports may consume and remove environment values before reporting an error.
+    secret_values = sorted(
+        {
+            value
+            for name, value in os.environ.items()
+            if value
+            and (
+                name in launch["environment"]["names"]
+                or re.search(
+                    r"SECRET|TOKEN|PASSWORD|CONNECTION_STRING|IDENTITY_HEADER|MSI_SECRET",
+                    name,
+                )
+            )
+        }
+        | {internal_token},
+        key=len,
+        reverse=True,
     )
     from catalog_app.server import create_server
 
@@ -269,6 +367,8 @@ def main() -> None:
         internal_token,
         resource_url,
         catalog_commit=catalog_commit,
+        launch=launch,
+        secret_values=secret_values,
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
     )

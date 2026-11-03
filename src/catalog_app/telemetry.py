@@ -22,6 +22,8 @@ _invocation_error: ContextVar[BaseException | None] = ContextVar(
 _console_stream = sys.stderr
 _console_level = logging.INFO
 _telemetry_enabled = False
+_resource = None
+_process_context: dict[str, Any] = {}
 _log_levels = {
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -63,37 +65,130 @@ def _operator_log(
     severity = _log_levels[level]
     if severity < _console_level:
         return
+    timestamp = datetime.now(timezone.utc)
     entry = {
-        "timestamp": datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z"),
+        "timestamp": timestamp.isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        ),
         "level": "warn" if level == "warning" else level,
         "actor": "system",
+        **_process_context,
         **_log_context.get(),
         "event": event,
         **fields,
         "service": "mcp",
         "pid": os.getpid(),
     }
+    if _resource is not None:
+        entry["resource"] = {
+            name: value
+            for name in ("service.name", "service.instance.id", "service.namespace")
+            if (value := _resource.attributes.get(name)) is not None
+        }
     if _telemetry_enabled:
-        from opentelemetry import trace
+        from opentelemetry import context, trace
 
-        span = trace.get_current_span().get_span_context()
+        otel_context = context.get_current()
+        span = trace.get_current_span(otel_context).get_span_context()
         if span.is_valid:
             entry.update(traceId=f"{span.trace_id:032x}", spanId=f"{span.span_id:016x}")
     _console_stream.write(json.dumps(entry, default=str, ensure_ascii=False) + "\n")
     _console_stream.flush()
     if _telemetry_enabled and export:
-        body = entry.get("message", entry.get("exception.message", event))
-        logging.getLogger("toolforge.operator").log(
-            severity,
-            body,
-            extra={key: value for key, value in entry.items() if key != "message"},
-        )
+        try:
+            from opentelemetry._logs import SeverityNumber, get_logger
+
+            exception = (
+                entry.get("exception.type") is not None
+                or entry.get("exception.message") is not None
+            )
+            # Azure otherwise replaces the exception message with the log body.
+            body = None
+            if not exception:
+                body = entry.get("message")
+                if body is None or body == "":
+                    body = next(
+                        (
+                            entry[key]
+                            for key in ("text", "error")
+                            if isinstance(entry.get(key), str) and entry[key]
+                        ),
+                        entry["event"],
+                    )
+            attributes = {
+                key: value
+                for key, value in entry.items()
+                if key not in {"timestamp", "resource"}
+                and (key != "level" or value in {"notice", "alert", "emergency"})
+            }
+            native_message = entry.get("exception.message") if exception else body
+            if not exception and not isinstance(body, str):
+                body = json.dumps(body, ensure_ascii=False)
+            if exception:
+                native_text = str(native_message)[:32768] if native_message else ""
+            else:
+                native_text = body[:32768].strip()
+            if native_text and (
+                attributes.get("message") == native_text
+                or (
+                    not exception
+                    and not isinstance(native_message, str)
+                    and attributes.get("message") == native_message
+                    and body == native_text
+                )
+            ):
+                attributes.pop("message", None)
+            for key in ("text", "error"):
+                if (
+                    native_text
+                    and isinstance(attributes.get(key), str)
+                    and attributes[key] == native_text
+                ):
+                    del attributes[key]
+            if exception and isinstance(attributes.get("message"), (dict, list)):
+                # OTel attributes cannot preserve arbitrary mixed-type JSON arrays.
+                attributes["message"] = json.dumps(
+                    attributes["message"], ensure_ascii=False
+                )
+            if not exception and native_text and attributes["event"] == native_text:
+                del attributes["event"]
+            if span.is_valid:
+                for key, value in (
+                    ("traceId", f"{span.trace_id:032x}"),
+                    ("spanId", f"{span.span_id:016x}"),
+                ):
+                    if attributes.get(key) == value:
+                        del attributes[key]
+            logger = get_logger("toolforge.operator")
+            resource = getattr(logger, "resource", None)
+            if (
+                resource is not None
+                and resource.attributes.get("service.name") == entry["service"]
+                and not resource.attributes.get("service.namespace")
+            ):
+                del attributes["service"]
+            logger.emit(
+                timestamp=int(timestamp.timestamp() * 1_000_000_000),
+                context=otel_context,
+                severity_number={
+                    logging.DEBUG: SeverityNumber.DEBUG,
+                    logging.INFO: SeverityNumber.INFO,
+                    logging.WARNING: SeverityNumber.WARN,
+                    logging.ERROR: SeverityNumber.ERROR,
+                    logging.CRITICAL: SeverityNumber.FATAL,
+                }[severity],
+                severity_text=entry["level"].upper(),
+                body=body,
+                attributes=attributes,
+            )
+        except Exception as error:
+            _operator_log(
+                "error", "telemetry.export.failed", export=False, **_error_fields(error)
+            )
 
 
 def configure() -> None:
-    global _console_level, _telemetry_enabled
+    global _console_level, _telemetry_enabled, _resource
 
     level = os.environ.pop("TOOLFORGE_LOG_LEVEL", "info").lower()
     if level not in {"debug", "info", "warn", "warning", "error"}:
@@ -119,13 +214,22 @@ def configure() -> None:
     sys.unraisablehook = lambda args: _operator_log(
         "error", "runtime.unraisable", **_error_fields(args.exc_value)
     )
+    from opentelemetry.sdk.resources import OTELResourceDetector, Resource
+
+    # Match the Azure distro resource even when export is disabled.
+    os.environ.setdefault(
+        "OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "azure_app_service,azure_vm"
+    )
+    _resource = Resource.create(
+        {"service.name": "mcp"} | dict(OTELResourceDetector().detect().attributes)
+    )
     if os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
         from azure.monitor.opentelemetry import configure_azure_monitor
-        from opentelemetry.sdk.resources import Resource
+        from opentelemetry._logs import get_logger
 
         configure_azure_monitor(
             logger_name="toolforge.operator",
-            resource=Resource.create({"service.name": "mcp"}),
+            resource=_resource,
             span_processors=[],
             instrumentation_options={
                 name: {"enabled": False}
@@ -133,6 +237,7 @@ def configure() -> None:
             },
             enable_live_metrics=False,
         )
+        _resource = get_logger("toolforge.operator").resource
         _telemetry_enabled = True
 
 
