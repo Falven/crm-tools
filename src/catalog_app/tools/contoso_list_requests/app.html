@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Software projects</title>
+    <style>
+      :root { color-scheme: light dark; font-family: "Segoe UI", system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: Canvas; color: CanvasText; overflow-wrap: anywhere; }
+      main { max-width: 760px; margin: auto; padding: 24px; }
+      h1 { margin: 0 0 8px; font-size: 1.45rem; }
+      #summary { font-size: .9rem; }
+      #summary[data-error="true"] { color: light-dark(#a4262c, #ff9d9d); }
+      ul { list-style: none; margin: 0; padding: 0; }
+      li { padding: 18px 0; border-top: 1px solid GrayText; }
+      h2 { margin: 0 0 8px; font-size: 1.05rem; }
+      p { margin: 8px 0; line-height: 1.5; }
+      .details { font-size: .85rem; }
+      @media (max-width: 420px) { main { padding: 18px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Software projects</h1>
+      <p id="summary" role="status" aria-live="polite">Loading projects…</p>
+      <ul id="projects" aria-label="Software projects"></ul>
+    </main>
+    <!-- app.js -->
+  </body>
+</html>

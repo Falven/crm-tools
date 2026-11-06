@@ -62,18 +62,9 @@ def create_server(**kwargs: Any) -> server_class:
         _strict_inputs(server, "contoso_submit_request")
 
     with tool_directory("contoso_list_requests"):
-        from .tools.contoso_list_requests import contoso_list_requests
+        from .tools.contoso_list_requests import register
 
-        server.add_tool(
-            contoso_list_requests,
-            title="List software projects",
-            annotations=ToolAnnotations(
-                read_only_hint=True,
-                destructive_hint=False,
-                idempotent_hint=True,
-                open_world_hint=False,
-            ),
-        )
+        register(server)
 
     with tool_directory("contoso_submit_answers"):
         from .tools.contoso_open_request import _strict_inputs
