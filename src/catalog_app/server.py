@@ -11,7 +11,7 @@ from .mise import MiseAuth, MiseMCPServer as server_class
 def create_server(**kwargs: Any) -> server_class:
     server = server_class(
         name="toolforge",
-        title='ToolForge 49.0.2 ACA scale check 20261106T011353Z',
+        title='',
         description="",
         instructions="",
         authentication=MiseAuth.from_env(),
