@@ -60,6 +60,8 @@ def contoso_estimate_request() -> dict[str, str]:
             with OpenAI(
                 base_url=endpoint,
                 api_key=get_bearer_token_provider(credential, scope),
+                timeout=60.0,
+                max_retries=0,
             ) as client:
                 response = client.responses.create(
                     model=deployment,
