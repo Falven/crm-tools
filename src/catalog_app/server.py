@@ -83,4 +83,18 @@ def create_server(**kwargs: Any) -> server_class:
         )
         _strict_inputs(server, "contoso_submit_answers")
 
+    with tool_directory("contoso_estimate_request"):
+        from .tools.contoso_estimate_request import contoso_estimate_request
+
+        server.add_tool(
+            contoso_estimate_request,
+            title="Estimate latest software request",
+            annotations=ToolAnnotations(
+                read_only_hint=True,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        )
+
     return server
